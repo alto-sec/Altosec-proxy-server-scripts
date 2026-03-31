@@ -85,13 +85,13 @@ if ($AcmeContactEmail -match '(?i)@example\.(com|org|net)$') {
     throw "Let's Encrypt rejects @example.com / .org / .net for ACME contacts. Use a real mailbox."
 }
 
-if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
-    throw 'Docker CLI not found. Install and start Docker Desktop, then verify with: docker version'
-}
-
 [Environment]::SetEnvironmentVariable('ALTOSEC_DEPLOY_DOMAIN', $DeployDomainFqdn.Trim(), 'Machine')
 [Environment]::SetEnvironmentVariable('ALTOSEC_DEPLOY_DIR', $DeployDir.Trim(), 'Machine')
 Write-Host "Set machine env: ALTOSEC_DEPLOY_DOMAIN=$($DeployDomainFqdn.Trim()) ALTOSEC_DEPLOY_DIR=$($DeployDir.Trim())"
+
+if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
+    throw 'Docker CLI not found. Install and start Docker Desktop, then verify with: docker version'
+}
 
 $deployRoot = $DeployDir.Trim()
 [void][System.IO.Directory]::CreateDirectory($deployRoot)
@@ -132,7 +132,7 @@ if (-not (Test-Path '.\.runner')) {
         '--url', $RepoUrl,
         '--token', $RegistrationToken,
         '--name', $RunnerName,
-        '--labels', 'self-hosted,Windows,altosec-proxy-node',
+        '--labels', "self-hosted,Windows,altosec-proxy-node,$RunnerName",
         '--unattended',
         '--runasservice'
     ) -Wait -PassThru -NoNewWindow
