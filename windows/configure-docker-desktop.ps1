@@ -84,9 +84,11 @@ if ($null -eq $de.builder.PSObject.Properties['gc']) {
 $de.builder.gc | Add-Member -NotePropertyName 'defaultKeepStorage' -NotePropertyValue '20GB' -Force
 $de.builder.gc | Add-Member -NotePropertyName 'enabled'            -NotePropertyValue $true  -Force
 $de            | Add-Member -NotePropertyName 'experimental'        -NotePropertyValue $false -Force
+$de            | Add-Member -NotePropertyName 'userland-proxy'       -NotePropertyValue $false -Force
 Write-Host '  [+] dockerEngine.builder.gc.defaultKeepStorage = 20GB'
 Write-Host '  [+] dockerEngine.builder.gc.enabled = true'
 Write-Host '  [+] dockerEngine.experimental = false'
+Write-Host '  [+] dockerEngine.userland-proxy = false'
 
 $settings | ConvertTo-Json -Depth 20 | Set-Content $activePath -Encoding UTF8
 Write-Host "Settings written: $activePath"
@@ -150,5 +152,5 @@ Write-Host ''
 Write-Host 'Done. All four host-networking settings applied:'
 Write-Host "  exposeDockerAPIOnTCP2375  = true  ($activePath)"
 Write-Host "  hostNetworkingEnabled     = true  ($activePath)"
-Write-Host "  dockerEngine GC + no-experimental  ($activePath)"
+Write-Host "  dockerEngine GC + no-experimental + userland-proxy=false  ($activePath)"
 Write-Host "  networkingMode=mirrored   ($WslConfigPath)"
