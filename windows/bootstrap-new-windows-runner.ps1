@@ -112,6 +112,29 @@ if (-not (Get-NetFirewallRule -Name $fwName -ErrorAction SilentlyContinue)) {
     Write-Host "Created firewall rule $fwName (TCP 80)."
 }
 
+$fwName443 = 'AltosecProxyHTTPS443'
+if (-not (Get-NetFirewallRule -Name $fwName443 -ErrorAction SilentlyContinue)) {
+    New-NetFirewallRule -Name $fwName443 -DisplayName 'Altosec proxy HTTPS (TCP 443 inbound)' `
+        -Direction Inbound -Protocol TCP -LocalPort 443 -Action Allow -Profile Any | Out-Null
+    Write-Host "Created firewall rule $fwName443 (TCP 443)."
+}
+
+# Docker Desktop host-networking settings + .wslconfig (WSL2 mirrored mode).
+# configure-docker-desktop.ps1 handles: exposeDockerAPIOnTCP2375, hostNetworkingEnabled,
+# userland-proxy=false, networkingMode=mirrored in .wslconfig, and Docker Desktop restart.
+$configureScript = Join-Path $PSScriptRoot 'configure-docker-desktop.ps1'
+Write-Host 'Applying Docker Desktop host-networking settings...'
+& $configureScript
+if ($LASTEXITCODE -and $LASTEXITCODE -ne 0) { throw "configure-docker-desktop.ps1 failed (exit $LASTEXITCODE)" }
+Write-Host 'Waiting for Docker daemon (up to 120 s)...'
+$deadline = (Get-Date).AddSeconds(120)
+while ((Get-Date) -lt $deadline) {
+    & docker info 2>&1 | Out-Null
+    if ($LASTEXITCODE -eq 0) { Write-Host 'Docker daemon ready.'; break }
+    Start-Sleep -Seconds 5
+}
+if ($LASTEXITCODE -ne 0) { throw 'Docker Desktop did not become ready within 120 s. Start it manually and re-run.' }
+
 if (-not (Test-Path (Join-Path $RunnerRoot 'config.cmd'))) {
     New-Item -ItemType Directory -Force -Path $RunnerRoot | Out-Null
     $rel = Invoke-RestMethod -Uri 'https://api.github.com/repos/actions/runner/releases/latest' `
