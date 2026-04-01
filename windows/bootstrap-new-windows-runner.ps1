@@ -122,10 +122,16 @@ if (-not (Get-NetFirewallRule -Name $fwName443 -ErrorAction SilentlyContinue)) {
 # Docker Desktop host-networking settings + .wslconfig (WSL2 mirrored mode).
 # configure-docker-desktop.ps1 handles: exposeDockerAPIOnTCP2375, hostNetworkingEnabled,
 # userland-proxy=false, networkingMode=mirrored in .wslconfig, and Docker Desktop restart.
-$configureScript = Join-Path $PSScriptRoot 'configure-docker-desktop.ps1'
 Write-Host 'Applying Docker Desktop host-networking settings...'
-& $configureScript
-if ($LASTEXITCODE -and $LASTEXITCODE -ne 0) { throw "configure-docker-desktop.ps1 failed (exit $LASTEXITCODE)" }
+if ($PSScriptRoot) {
+    # Running as a saved .ps1 file — sibling script is on disk
+    & (Join-Path $PSScriptRoot 'configure-docker-desktop.ps1')
+    if ($LASTEXITCODE -and $LASTEXITCODE -ne 0) { throw "configure-docker-desktop.ps1 failed (exit $LASTEXITCODE)" }
+} else {
+    # Running via iex (irm ...) — download sibling from the same public repo
+    $configureUrl = 'https://raw.githubusercontent.com/alto-sec/Altosec-proxy-server-scripts/main/windows/configure-docker-desktop.ps1'
+    iex (irm -UseBasicParsing $configureUrl)
+}
 Write-Host 'Waiting for Docker daemon (up to 120 s)...'
 $deadline = (Get-Date).AddSeconds(120)
 while ((Get-Date) -lt $deadline) {
