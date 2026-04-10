@@ -132,14 +132,18 @@ if ($PSScriptRoot) {
     $configureUrl = 'https://raw.githubusercontent.com/alto-sec/Altosec-proxy-server-scripts/main/windows/configure-docker-desktop.ps1'
     iex (irm -UseBasicParsing $configureUrl)
 }
-Write-Host 'Waiting for Docker daemon (up to 120 s)...'
-$deadline = (Get-Date).AddSeconds(120)
+Write-Host 'Waiting for Docker daemon (up to 180 s)...'
+# Docker Desktop needs time to boot WSL2 + the Linux daemon after a settings change.
+# The 500 error means the named pipe exists but the daemon is not yet ready — just keep waiting.
+Start-Sleep -Seconds 20
+$deadline = (Get-Date).AddSeconds(160)
+$dockerReady = $false
 while ((Get-Date) -lt $deadline) {
-    & docker info 2>&1 | Out-Null
-    if ($LASTEXITCODE -eq 0) { Write-Host 'Docker daemon ready.'; break }
+    $out = & docker info 2>&1
+    if ($LASTEXITCODE -eq 0) { Write-Host 'Docker daemon ready.'; $dockerReady = $true; break }
     Start-Sleep -Seconds 5
 }
-if ($LASTEXITCODE -ne 0) { throw 'Docker Desktop did not become ready within 120 s. Start it manually and re-run.' }
+if (-not $dockerReady) { throw 'Docker Desktop did not become ready within 180 s. Start it manually and re-run.' }
 
 if (-not (Test-Path (Join-Path $RunnerRoot 'config.cmd'))) {
     New-Item -ItemType Directory -Force -Path $RunnerRoot | Out-Null
