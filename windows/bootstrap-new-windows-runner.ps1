@@ -135,12 +135,17 @@ if ($PSScriptRoot) {
 Write-Host 'Waiting for Docker daemon (up to 360 s)...'
 # Docker Desktop needs time to boot WSL2 + the Linux daemon after a settings change.
 # The 500 error means the named pipe exists but the daemon is not yet ready — just keep waiting.
+# Use try/catch + explicit $ErrorActionPreference override so Stop mode does not abort the loop
+# when docker info writes to stderr during startup.
 Start-Sleep -Seconds 20
 $deadline = (Get-Date).AddSeconds(340)
 $dockerReady = $false
 while ((Get-Date) -lt $deadline) {
-    $out = & docker info 2>&1
+    try {
+        $null = & docker info 2>&1
+    } catch { }
     if ($LASTEXITCODE -eq 0) { Write-Host 'Docker daemon ready.'; $dockerReady = $true; break }
+    Write-Host "  Docker not ready yet (exit $LASTEXITCODE), retrying..."
     Start-Sleep -Seconds 5
 }
 if (-not $dockerReady) { throw 'Docker Desktop did not become ready within 360 s. Start it manually and re-run.' }
