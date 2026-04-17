@@ -120,11 +120,13 @@ After rebooting, re-run this script. WSL2 will be ready on the next run.
         Write-Host "Distro $WslDistro installed."
 
         # Wait for distro to be usable (first-boot provisioning).
+        # Use 2>$null to suppress WSL's systemd user-session warnings for root — those
+        # warnings are harmless but trigger NativeCommandError under $ErrorActionPreference='Stop'.
         Write-Host 'Waiting for distro to finish first-boot setup (up to 120 s)...'
         $deadline = (Get-Date).AddSeconds(120)
         while ((Get-Date) -lt $deadline) {
-            $test = & wsl -d $WslDistro -- echo ready 2>&1
-            if ($LASTEXITCODE -eq 0 -and $test -match 'ready') { break }
+            $test = & wsl -d $WslDistro -- echo ready 2>$null
+            if ("$test" -match 'ready') { break }
             Start-Sleep -Seconds 5
         }
     } else {
