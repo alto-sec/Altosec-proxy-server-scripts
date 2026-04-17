@@ -19,11 +19,11 @@
   handles all subsequent docker pull / compose operations.
 
 .PARAMETER RunnerName
-  Unique name for the GitHub Actions runner (shown in Settings → Actions → Runners).
+  Unique name for the GitHub Actions runner (shown in Settings -> Actions -> Runners).
 
 .PARAMETER RegistrationToken
   GitHub runner registration token (expires in minutes — get it immediately before running).
-  GitHub → repo → Settings → Actions → Runners → New self-hosted runner → copy token.
+  GitHub -> repo -> Settings -> Actions -> Runners -> New self-hosted runner -> copy token.
 
 .PARAMETER RepoUrl
   GitHub repo URL. Default: https://github.com/alto-sec/Altosec-proxy-server
@@ -56,7 +56,12 @@ param(
     [switch] $SkipWslInstall
 )
 
-$ErrorActionPreference = 'Stop'
+# Use 'Continue' (PowerShell default) instead of 'Stop'.
+# Ubuntu 24.04 WSL2 with systemd writes "Failed to start systemd user session for root"
+# to stderr on every wsl invocation. With 'Stop', PowerShell converts any native-command
+# stderr into a terminating NativeCommandError — even when 2>$null is used.
+# We use explicit exit-code checks and throw where needed instead.
+$ErrorActionPreference = 'Continue'
 
 function Read-WithDefault {
     param([string] $Prompt, [string] $Default)
@@ -105,12 +110,20 @@ After rebooting, re-run this script. WSL2 will be ready on the next run.
     }
 
     # Set WSL default version to 2.
-    & wsl --set-default-version 2 2>&1 | Out-Null
+    & wsl --set-default-version 2 | Out-Null
 
-    # Check if the target distro exists by probing it directly.
-    # wsl -l output is UTF-16LE; string matching is unreliable — probe instead.
-    $null = & wsl -d $WslDistro -- exit 0 2>$null
-    $distroExists = ($LASTEXITCODE -eq 0)
+    # Check if the target distro is already registered via the Windows registry.
+    # Avoids running a command inside the distro (which triggers systemd user-session
+    # warnings on Ubuntu 24.04 with systemd enabled, causing NativeCommandError).
+    $lxssKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Lxss'
+    $distroExists = $false
+    if (Test-Path $lxssKey) {
+        $distroExists = ($null -ne (
+            Get-ChildItem $lxssKey -ErrorAction SilentlyContinue |
+            Get-ItemProperty -ErrorAction SilentlyContinue |
+            Where-Object { $_.DistributionName -eq $WslDistro }
+        ))
+    }
 
     if (-not $distroExists) {
         Write-Host "Installing WSL2 distro: $WslDistro ..."
@@ -121,12 +134,10 @@ After rebooting, re-run this script. WSL2 will be ready on the next run.
         Write-Host "Distro $WslDistro installed."
 
         # Wait for distro to be usable (first-boot provisioning).
-        # Use 2>$null to suppress WSL's systemd user-session warnings for root — those
-        # warnings are harmless but trigger NativeCommandError under $ErrorActionPreference='Stop'.
         Write-Host 'Waiting for distro to finish first-boot setup (up to 120 s)...'
         $deadline = (Get-Date).AddSeconds(120)
         while ((Get-Date) -lt $deadline) {
-            $test = & wsl -d $WslDistro -- echo ready 2>$null
+            $test = & wsl -d $WslDistro -- echo ready 2>&1
             if ("$test" -match 'ready') { break }
             Start-Sleep -Seconds 5
         }
@@ -173,15 +184,17 @@ if (-not (Test-Path $wslCfgPath)) {
 
 Write-Host '=== Step 3: Enable systemd in WSL2 ==='
 
-# Write directly via \\wsl$\<distro> instead of running bash -u root inside WSL.
-# Ubuntu 24.04 with systemd tries to start systemd user@0.service when -u root
-# is used, which hangs indefinitely. The \\wsl$ Windows mount avoids this entirely.
-
-# Ensure the distro is running so \\wsl$ is accessible (run without -u root).
-$null = & wsl -d $WslDistro -- exit 0 2>$null
+# Modify /etc/wsl.conf directly via the Windows \\wsl$ filesystem mount.
+# This avoids running bash inside the distro at this stage — Ubuntu 24.04 with
+# systemd already enabled can produce stderr warnings that interfere with scripting.
+# Accessing \\wsl$\<distro> auto-starts the distro if it is not already running.
 
 $wslConfWin = "\\wsl$\$WslDistro\etc\wsl.conf"
-$cfg = if (Test-Path $wslConfWin) { Get-Content $wslConfWin -Raw } else { '' }
+$cfg = ''
+if (Test-Path $wslConfWin) {
+    $cfg = Get-Content $wslConfWin -Raw -ErrorAction SilentlyContinue
+    if (-not $cfg) { $cfg = '' }
+}
 
 if ($cfg -match '(?m)^\s*systemd\s*=\s*true') {
     Write-Host '  [=] systemd already enabled in /etc/wsl.conf'
@@ -204,8 +217,8 @@ Write-Host '=== Step 4: Restarting WSL2 ==='
 & wsl --shutdown
 Start-Sleep -Seconds 8
 
-# Wake it back up.
-& wsl -d $WslDistro -- echo 'WSL2 restarted' | Out-Null
+# Wake it back up (stderr from systemd user-session warning is harmless noise).
+& wsl -d $WslDistro -- echo 'WSL2 restarted' 2>&1 | Out-Null
 Write-Host 'WSL2 restarted.'
 
 # ── Step 5: Run bootstrap-node.sh inside WSL2 ─────────────────────────────────
@@ -236,8 +249,8 @@ $argsStr = ($bootstrapArgs | ForEach-Object { "'$_'" }) -join ' '
 $cmd = "bash '$bootstrapWsl' $argsStr"
 
 Write-Host "Running inside WSL2: $cmd"
-# Run without -u root: fresh Ubuntu-24.04 WSL default user IS root, and explicit
-# -u root triggers systemd user@0.service setup which hangs on Ubuntu 24.04.
+# Default user for fresh Ubuntu-24.04 WSL is root — no need for -u root.
+# Explicit -u root causes systemd user@0.service setup which can hang.
 & wsl -d $WslDistro -- bash -c $cmd
 if ($LASTEXITCODE -ne 0) { throw "bootstrap-node.sh failed (exit $LASTEXITCODE)" }
 
@@ -249,9 +262,10 @@ $taskName   = 'AltosecProxyWsl2Autostart'
 $taskExists = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
 
 # Startup command: wake WSL2 distro so systemd (docker + runner) comes up automatically.
+# No -u root: default user is root, and explicit -u root can hang due to systemd user session.
 $action  = New-ScheduledTaskAction `
     -Execute 'wsl.exe' `
-    -Argument "-d $WslDistro -u root -- bash -c `"systemctl start docker 2>/dev/null; exit 0`""
+    -Argument "-d $WslDistro -- bash -c `"systemctl start docker 2>/dev/null; exit 0`""
 $trigger = New-ScheduledTaskTrigger -AtStartup
 $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 5)
 $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -RunLevel Highest
