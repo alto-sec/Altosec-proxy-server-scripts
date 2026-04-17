@@ -225,13 +225,20 @@ Write-Host 'WSL2 restarted.'
 
 Write-Host '=== Step 5: Running bootstrap-node.sh inside WSL2 ==='
 
-# Find the script relative to this file's location (works from repo clone and from image extract).
-$scriptDir   = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
-$deployRoot  = (Resolve-Path (Join-Path $scriptDir "..\..")).Path
-$bootstrapWin = Join-Path $deployRoot 'scripts\linux\bootstrap-node.sh'
+# Find bootstrap-node.sh: first look relative to this script (repo clone),
+# then fall back to downloading from the public scripts repo.
+$bootstrapWin = $null
+$scriptDir = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
+if ($scriptDir) {
+    $candidate = Join-Path (Resolve-Path (Join-Path $scriptDir '..\..') -ErrorAction SilentlyContinue) 'scripts\linux\bootstrap-node.sh'
+    if ($candidate -and (Test-Path $candidate)) { $bootstrapWin = $candidate }
+}
 
-if (-not (Test-Path $bootstrapWin)) {
-    throw "bootstrap-node.sh not found at $bootstrapWin. Ensure the scripts\linux\ folder is present."
+if (-not $bootstrapWin) {
+    $rawUrl      = 'https://raw.githubusercontent.com/alto-sec/Altosec-proxy-server-scripts/main/linux/bootstrap-node.sh'
+    $bootstrapWin = Join-Path $env:TEMP 'bootstrap-node.sh'
+    Write-Host "Downloading bootstrap-node.sh from $rawUrl ..."
+    Invoke-WebRequest -Uri $rawUrl -OutFile $bootstrapWin -UseBasicParsing
 }
 
 # Convert Windows path to WSL2 path (C:\foo\bar -> /mnt/c/foo/bar).
