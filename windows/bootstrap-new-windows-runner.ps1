@@ -1,11 +1,28 @@
 #Requires -RunAsAdministrator
 <#
 .SYNOPSIS
-  New Windows server: verify Docker, set ALTOSEC_* system variables, open firewall TCP 80, install and register GitHub self-hosted runner, configure Local System + docker-users (SYSTEM).
+  New Windows server: set ALTOSEC_* system variables, then run prepare-wsl2.ps1 which
+  installs WSL2 Ubuntu + Docker Engine + GitHub Actions runner (all inside WSL2).
 
 .DESCRIPTION
-  Private GHCR policy: container startup is handled exclusively by the GitHub Deploy workflow.
-  When run without parameters (e.g. via iex(irm raw URL)), required values are prompted interactively via Read-Host.
+  Single entry point for provisioning a new Windows proxy node.
+  Docker Desktop is NOT required or used — Docker Engine runs inside WSL2 Ubuntu.
+  The runner registered here is a Linux runner (inside WSL2) labeled:
+    self-hosted, Linux, altosec-proxy-node, <RunnerName>
+
+  Steps performed:
+    1. Prompt for required values when parameters are omitted.
+    2. Set ALTOSEC_DEPLOY_DOMAIN + ALTOSEC_DEPLOY_DIR as machine-scope env vars.
+    3. Open Windows Firewall for TCP 80 (ACME HTTP-01) and TCP 443 (HTTPS).
+    4. Call prepare-wsl2.ps1 which handles:
+         - WSL2 feature enablement (if needed — may require reboot on first run)
+         - Ubuntu 24.04 WSL2 distro install
+         - .wslconfig networkingMode=mirrored (real client IPs in containers)
+         - systemd enabled in WSL2
+         - Docker Engine install inside WSL2
+         - certbot install inside WSL2
+         - GitHub Actions runner registration inside WSL2 as systemd service
+         - Windows Task Scheduler task to auto-start WSL2 on boot
 
 .PARAMETER DeployDomainFqdn
   Public FQDN. If empty, prompted interactively.
@@ -17,174 +34,148 @@
   GitHub runner registration token. If empty, prompted interactively.
 
 .PARAMETER RepoUrl
-  Default: https://github.com/alto-sec/Altosec-proxy-server (press Enter to keep)
+  Default: https://github.com/alto-sec/Altosec-proxy-server
 
 .PARAMETER RunnerRoot
-  Default: C:\actions-runner
+  Path inside WSL2 for the runner. Default: /opt/actions-runner
 
 .PARAMETER DeployDir
-  Default: C:\altosec-deploy
+  Path inside WSL2 for deploy artefacts. Default: /opt/altosec-deploy
 
 .PARAMETER AcmeContactEmail
-  Let's Encrypt ACME contact email (not stored as a system env var). If empty, prompted interactively. Saved only to acme-contact-email.txt in the deploy root.
+  Let's Encrypt ACME contact email. If empty, prompted interactively.
+  Saved only to <deploy-dir>/acme-contact-email.txt — not a system env var.
+
+.PARAMETER WslDistro
+  WSL2 distro to install/use. Default: Ubuntu-24.04
 #>
 [CmdletBinding()]
 param(
-    [string] $DeployDomainFqdn = '',
-    [string] $RunnerName = '',
-    [string] $RegistrationToken = '',
-    [string] $RepoUrl = '',
-    [string] $RunnerRoot = '',
-    [string] $DeployDir = '',
-    [string] $AcmeContactEmail = ''
+    [string] $DeployDomainFqdn   = '',
+    [string] $RunnerName         = '',
+    [string] $RegistrationToken  = '',
+    [string] $RepoUrl            = '',
+    [string] $RunnerRoot         = '/opt/actions-runner',
+    [string] $DeployDir          = '/opt/altosec-deploy',
+    [string] $AcmeContactEmail   = '',
+    [string] $WslDistro          = 'Ubuntu-24.04'
 )
 
 $ErrorActionPreference = 'Stop'
 
 function Read-WithDefault {
-    param(
-        [string] $Prompt,
-        [string] $Default
-    )
+    param([string] $Prompt, [string] $Default)
     $hint = if ($null -ne $Default -and $Default -ne '') { " [$Default]" } else { '' }
     $line = Read-Host "$Prompt$hint"
     if ([string]::IsNullOrWhiteSpace($line)) { return $Default }
     return $line.Trim()
 }
 
+# ── Prompt for required values ─────────────────────────────────────────────────
+
 if ([string]::IsNullOrWhiteSpace($DeployDomainFqdn)) {
     $DeployDomainFqdn = Read-Host 'Public FQDN (DNS A -> this host; ALTOSEC_DEPLOY_DOMAIN)'
 }
 if ([string]::IsNullOrWhiteSpace($RunnerName)) {
-    $RunnerName = Read-Host 'Runner name (unique on GitHub)'
+    $RunnerName = Read-Host 'Runner name (unique on GitHub, e.g. proxy-node-01)'
 }
 if ([string]::IsNullOrWhiteSpace($RegistrationToken)) {
     $RegistrationToken = Read-Host 'Registration token (GitHub -> New self-hosted runner)'
 }
-
 if ([string]::IsNullOrWhiteSpace($RepoUrl)) {
     $RepoUrl = Read-WithDefault -Prompt 'Runner repo URL' -Default 'https://github.com/alto-sec/Altosec-proxy-server'
 }
-if ([string]::IsNullOrWhiteSpace($RunnerRoot)) {
-    $RunnerRoot = Read-WithDefault -Prompt 'Runner install folder' -Default 'C:\actions-runner'
-}
-if ([string]::IsNullOrWhiteSpace($DeployDir)) {
-    $DeployDir = Read-WithDefault -Prompt 'Deploy extract folder (ALTOSEC_DEPLOY_DIR)' -Default 'C:\altosec-deploy'
-}
 if ([string]::IsNullOrWhiteSpace($AcmeContactEmail)) {
-    $AcmeContactEmail = Read-WithDefault -Prompt "Let's Encrypt ACME contact email (saved to deploy folder only, not system env)" -Default 'altosecteam@gmail.com'
+    $AcmeContactEmail = Read-WithDefault -Prompt "Let's Encrypt ACME contact email" -Default 'altosecteam@gmail.com'
 }
 
 if ([string]::IsNullOrWhiteSpace($DeployDomainFqdn)) { throw 'FQDN is required.' }
-if ([string]::IsNullOrWhiteSpace($RunnerName)) { throw 'Runner name is required.' }
-if ([string]::IsNullOrWhiteSpace($RegistrationToken)) { throw 'Registration token is required.' }
-$RunnerName = $RunnerName.Trim()
+if ([string]::IsNullOrWhiteSpace($RunnerName))        { throw 'RunnerName is required.' }
+if ([string]::IsNullOrWhiteSpace($RegistrationToken)) { throw 'RegistrationToken is required.' }
 $AcmeContactEmail = $AcmeContactEmail.Trim()
-if ([string]::IsNullOrWhiteSpace($AcmeContactEmail)) { throw 'ACME contact email is required.' }
+if ([string]::IsNullOrWhiteSpace($AcmeContactEmail))  { throw 'ACME contact email is required.' }
 if ($AcmeContactEmail -match '(?i)@example\.(com|org|net)$') {
-    throw "Let's Encrypt rejects @example.com / .org / .net for ACME contacts. Use a real mailbox."
+    throw "Let's Encrypt rejects @example.com / .org / .net. Use a real mailbox."
 }
+
+# ── Step 1: Machine-scope environment variables ────────────────────────────────
 
 [Environment]::SetEnvironmentVariable('ALTOSEC_DEPLOY_DOMAIN', $DeployDomainFqdn.Trim(), 'Machine')
-[Environment]::SetEnvironmentVariable('ALTOSEC_DEPLOY_DIR', $DeployDir.Trim(), 'Machine')
-Write-Host "Set machine env: ALTOSEC_DEPLOY_DOMAIN=$($DeployDomainFqdn.Trim()) ALTOSEC_DEPLOY_DIR=$($DeployDir.Trim())"
+[Environment]::SetEnvironmentVariable('ALTOSEC_DEPLOY_DIR',    $DeployDir.Trim(),         'Machine')
+Write-Host "Machine env: ALTOSEC_DEPLOY_DOMAIN=$($DeployDomainFqdn.Trim())"
+Write-Host "Machine env: ALTOSEC_DEPLOY_DIR=$($DeployDir.Trim())"
 
-if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
-    throw 'Docker CLI not found. Install and start Docker Desktop, then verify with: docker version'
+# ── Step 2: Windows Firewall rules ─────────────────────────────────────────────
+
+function Ensure-FirewallRule {
+    param([string] $Name, [string] $DisplayName, [int] $Port)
+    $existing = Get-NetFirewallRule -Name $Name -ErrorAction SilentlyContinue
+    if ($existing) {
+        if ($existing.Enabled -ne $true) {
+            Enable-NetFirewallRule -Name $Name
+            Write-Host "  [+] Enabled firewall rule '$Name' (TCP $Port inbound)."
+        } else {
+            Write-Host "  [=] Firewall rule '$Name' (TCP $Port) already active."
+        }
+        return
+    }
+    New-NetFirewallRule `
+        -Name $Name -DisplayName $DisplayName `
+        -Direction Inbound -Protocol TCP -LocalPort $Port `
+        -Action Allow -Profile Any | Out-Null
+    Write-Host "  [+] Created firewall rule '$Name' (TCP $Port inbound, all profiles)."
 }
 
-$deployRoot = $DeployDir.Trim()
-[void][System.IO.Directory]::CreateDirectory($deployRoot)
-$acmePath = Join-Path $deployRoot 'acme-contact-email.txt'
-[System.IO.File]::WriteAllText($acmePath, $AcmeContactEmail, [System.Text.UTF8Encoding]::new($false))
-Write-Host "Saved ACME contact for Deploy workflow: $acmePath (not stored in system environment variables)."
+Ensure-FirewallRule -Name 'AltosecProxyACME80'   -DisplayName 'Altosec proxy ACME HTTP-01 (TCP 80 inbound)'  -Port 80
+Ensure-FirewallRule -Name 'AltosecProxyHTTPS443'  -DisplayName 'Altosec proxy HTTPS (TCP 443 inbound)'        -Port 443
 
-try {
-    Add-LocalGroupMember -Group 'docker-users' -Member 'NT AUTHORITY\SYSTEM'
-} catch {
-    if ($_.Exception.Message -notmatch 'already a member') { throw }
-}
+# ── Step 3: Run prepare-wsl2.ps1 ──────────────────────────────────────────────
 
-$fwName = 'AltosecProxyACME80'
-if (-not (Get-NetFirewallRule -Name $fwName -ErrorAction SilentlyContinue)) {
-    New-NetFirewallRule -Name $fwName -DisplayName 'Altosec proxy ACME HTTP-01 (TCP 80 inbound)' `
-        -Direction Inbound -Protocol TCP -LocalPort 80 -Action Allow -Profile Any | Out-Null
-    Write-Host "Created firewall rule $fwName (TCP 80)."
-}
+Write-Host '=== Calling prepare-wsl2.ps1 (WSL2 + Docker Engine + runner) ==='
 
-$fwName443 = 'AltosecProxyHTTPS443'
-if (-not (Get-NetFirewallRule -Name $fwName443 -ErrorAction SilentlyContinue)) {
-    New-NetFirewallRule -Name $fwName443 -DisplayName 'Altosec proxy HTTPS (TCP 443 inbound)' `
-        -Direction Inbound -Protocol TCP -LocalPort 443 -Action Allow -Profile Any | Out-Null
-    Write-Host "Created firewall rule $fwName443 (TCP 443)."
-}
+$prepareScript = $null
 
-# Docker Desktop host-networking settings + .wslconfig (WSL2 mirrored mode).
-# configure-docker-desktop.ps1 handles: exposeDockerAPIOnTCP2375, hostNetworkingEnabled,
-# userland-proxy=false, networkingMode=mirrored in .wslconfig, and Docker Desktop restart.
-Write-Host 'Applying Docker Desktop host-networking settings...'
 if ($PSScriptRoot) {
-    # Running as a saved .ps1 file — sibling script is on disk
-    & (Join-Path $PSScriptRoot 'configure-docker-desktop.ps1')
-    if ($LASTEXITCODE -and $LASTEXITCODE -ne 0) { throw "configure-docker-desktop.ps1 failed (exit $LASTEXITCODE)" }
-} else {
-    # Running via iex (irm ...) — download sibling from the same public repo
-    $configureUrl = 'https://raw.githubusercontent.com/alto-sec/Altosec-proxy-server-scripts/main/windows/configure-docker-desktop.ps1'
-    iex (irm -UseBasicParsing $configureUrl)
-}
-Write-Host 'Waiting for Docker daemon (up to 360 s)...'
-# Docker Desktop needs time to boot WSL2 + the Linux daemon after a settings change.
-# The 500 error means the named pipe exists but the daemon is not yet ready — just keep waiting.
-# Use try/catch + explicit $ErrorActionPreference override so Stop mode does not abort the loop
-# when docker info writes to stderr during startup.
-Start-Sleep -Seconds 20
-$deadline = (Get-Date).AddSeconds(340)
-$dockerReady = $false
-while ((Get-Date) -lt $deadline) {
-    try {
-        $null = & docker info 2>&1
-    } catch { }
-    if ($LASTEXITCODE -eq 0) { Write-Host 'Docker daemon ready.'; $dockerReady = $true; break }
-    Write-Host "  Docker not ready yet (exit $LASTEXITCODE), retrying..."
-    Start-Sleep -Seconds 5
-}
-if (-not $dockerReady) { throw 'Docker Desktop did not become ready within 360 s. Start it manually and re-run.' }
-
-if (-not (Test-Path (Join-Path $RunnerRoot 'config.cmd'))) {
-    New-Item -ItemType Directory -Force -Path $RunnerRoot | Out-Null
-    $rel = Invoke-RestMethod -Uri 'https://api.github.com/repos/actions/runner/releases/latest' `
-        -Headers @{ 'User-Agent' = 'Altosec-Windows-Bootstrap' }
-    $asset = $rel.assets | Where-Object { $_.name -match '^actions-runner-win-x64-[\d.]+\.zip$' } | Select-Object -First 1
-    if (-not $asset) { throw 'Could not find actions-runner-win-x64 zip in latest release.' }
-    $zip = Join-Path $env:TEMP $asset.name
-    Write-Host "Downloading $($asset.name) ..."
-    Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $zip
-    Expand-Archive -Path $zip -DestinationPath $RunnerRoot -Force
-    Remove-Item $zip -Force
+    # Running from a repo clone or image-extracted deploy dir.
+    $candidate = Join-Path $PSScriptRoot 'prepare-wsl2.ps1'
+    if (Test-Path $candidate) { $prepareScript = $candidate }
 }
 
-Push-Location $RunnerRoot
-if (-not (Test-Path '.\.runner')) {
-    $cfg = Join-Path $RunnerRoot 'config.cmd'
-    $proc = Start-Process -FilePath $cfg -WorkingDirectory $RunnerRoot -ArgumentList @(
-        '--url', $RepoUrl,
-        '--token', $RegistrationToken,
-        '--name', $RunnerName,
-        '--labels', "self-hosted,Windows,altosec-proxy-node,$RunnerName",
-        '--unattended',
-        '--runasservice'
-    ) -Wait -PassThru -NoNewWindow
-    if ($proc.ExitCode -ne 0) { throw "config.cmd failed with exit $($proc.ExitCode)" }
-    Write-Host 'Runner registered as service.'
-} else {
-    Write-Host 'Runner already configured (.runner exists). Skipping config.cmd.'
-}
-Pop-Location
-
-Get-CimInstance Win32_Service -Filter "Name LIKE 'actions.runner%'" | ForEach-Object {
-    & sc.exe config $_.Name obj= LocalSystem | Out-Null
-    Write-Host "Set $($_.Name) logon to Local System."
+if (-not $prepareScript) {
+    # Running via iex (irm ...) — download sibling from the public scripts repo.
+    $rawUrl = 'https://raw.githubusercontent.com/alto-sec/Altosec-proxy-server-scripts/main/windows/prepare-wsl2.ps1'
+    $tmpPath = Join-Path $env:TEMP 'prepare-wsl2.ps1'
+    Write-Host "Downloading prepare-wsl2.ps1 from $rawUrl ..."
+    Invoke-WebRequest -Uri $rawUrl -OutFile $tmpPath -UseBasicParsing
+    $prepareScript = $tmpPath
 }
 
-Get-Service 'actions.runner*' | Restart-Service
-Write-Host 'Done. Confirm the runner shows Idle in GitHub -> Settings -> Runners, then trigger the Deploy workflow.'
+$splat = @{
+    DeployDomainFqdn  = $DeployDomainFqdn.Trim()
+    RunnerName        = $RunnerName
+    RegistrationToken = $RegistrationToken
+    RepoUrl           = $RepoUrl
+    DeployDir         = $DeployDir
+    RunnerRoot        = $RunnerRoot
+    AcmeEmail         = $AcmeContactEmail
+    WslDistro         = $WslDistro
+}
+
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
+& $prepareScript @splat
+if ($LASTEXITCODE -and $LASTEXITCODE -ne 0) {
+    throw "prepare-wsl2.ps1 exited with code $LASTEXITCODE"
+}
+
+# ── Done ──────────────────────────────────────────────────────────────────────
+
+Write-Host ''
+Write-Host '=== bootstrap-new-windows-runner.ps1 complete ==='
+Write-Host ''
+Write-Host 'Sanity checks:'
+Write-Host '  wsl -d Ubuntu-24.04 -- docker info'
+Write-Host '  wsl -d Ubuntu-24.04 -- systemctl status actions.runner.*'
+Write-Host '  [Environment]::GetEnvironmentVariable(''ALTOSEC_DEPLOY_DOMAIN'', ''Machine'')'
+Write-Host ''
+Write-Host 'Next: confirm the runner shows Idle in GitHub -> Settings -> Actions -> Runners,'
+Write-Host 'then trigger the Deploy workflow (handles docker pull, TLS cert, and compose up).'
