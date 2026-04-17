@@ -107,9 +107,10 @@ After rebooting, re-run this script. WSL2 will be ready on the next run.
     # Set WSL default version to 2.
     & wsl --set-default-version 2 2>&1 | Out-Null
 
-    # Check if the target distro exists.
-    $distroList = & wsl -l -q 2>&1
-    $distroExists = $distroList | Where-Object { $_ -match [regex]::Escape($WslDistro) }
+    # Check if the target distro exists by probing it directly.
+    # wsl -l output is UTF-16LE; string matching is unreliable — probe instead.
+    $null = & wsl -d $WslDistro -- exit 0 2>$null
+    $distroExists = ($LASTEXITCODE -eq 0)
 
     if (-not $distroExists) {
         Write-Host "Installing WSL2 distro: $WslDistro ..."
