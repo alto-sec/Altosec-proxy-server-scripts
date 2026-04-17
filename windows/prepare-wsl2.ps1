@@ -242,7 +242,9 @@ if (-not $bootstrapWin) {
 }
 
 # Convert Windows path to WSL2 path (C:\foo\bar -> /mnt/c/foo/bar).
-$bootstrapWsl = ($bootstrapWin -replace '\\', '/') -replace '^([A-Za-z]):', { "/mnt/$($_.Groups[1].Value.ToLower())" }
+# Note: scriptblock replacements in -replace require PowerShell 6+; use explicit string ops for PS 5.1.
+$bootstrapWsl = $bootstrapWin -replace '\\', '/'
+$bootstrapWsl = '/mnt/' + $bootstrapWsl[0].ToString().ToLower() + $bootstrapWsl.Substring(2)
 
 $bootstrapArgs = @(
     "--repo-url",    $RepoUrl,
