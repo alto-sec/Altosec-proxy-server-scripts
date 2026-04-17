@@ -9,16 +9,14 @@
     3. Writes ~/.wslconfig with networkingMode=mirrored (real client IPs visible inside containers).
     4. Enables systemd inside WSL2 (/etc/wsl.conf boot.systemd=true).
     5. Shuts down and restarts WSL2 so the new settings take effect.
-    6. Runs scripts/linux/bootstrap-node.sh INSIDE WSL2 (installs Docker Engine, certbot,
+    6. Runs scripts/linux/bootstrap-node.sh INSIDE WSL2 (installs Docker Engine,
        GitHub Actions runner, systemd services — the same script used on native Linux).
     7. Creates a Windows Task Scheduler task that starts WSL2 Ubuntu on system boot,
        so Docker and the runner come up automatically after a Windows restart.
 
+  TLS is handled by the upstream nginx reverse proxy. This server runs plain HTTP on port 80.
   After this script completes the node is fully provisioned. The GitHub Actions Deploy workflow
-  handles all subsequent docker pull / TLS / compose operations.
-
-.PARAMETER DeployDomainFqdn
-  Public FQDN this server will serve (e.g. proxy.example.com). Saved as ALTOSEC_DEPLOY_DOMAIN.
+  handles all subsequent docker pull / compose operations.
 
 .PARAMETER RunnerName
   Unique name for the GitHub Actions runner (shown in Settings → Actions → Runners).
@@ -36,10 +34,6 @@
 .PARAMETER RunnerRoot
   Path inside WSL2 where the runner is installed. Default: /opt/actions-runner
 
-.PARAMETER AcmeEmail
-  Let's Encrypt ACME contact email. If empty, prompted interactively.
-  Saved to <deploy-dir>/acme-contact-email.txt inside WSL2 (not a system env var).
-
 .PARAMETER WslDistro
   WSL2 distro name to use. Default: Ubuntu-24.04 (installed if not present).
 
@@ -48,19 +42,16 @@
 
 .EXAMPLE
   .\scripts\windows\prepare-wsl2.ps1 `
-    -DeployDomainFqdn proxy.example.com `
-    -RunnerName       my-proxy-node-01 `
+    -RunnerName        my-proxy-node-01 `
     -RegistrationToken <token>
 #>
 [CmdletBinding()]
 param(
-    [string] $DeployDomainFqdn   = '',
     [string] $RunnerName         = '',
     [string] $RegistrationToken  = '',
     [string] $RepoUrl            = '',
     [string] $DeployDir          = '/opt/altosec-deploy',
     [string] $RunnerRoot         = '/opt/actions-runner',
-    [string] $AcmeEmail          = '',
     [string] $WslDistro          = 'Ubuntu-24.04',
     [switch] $SkipWslInstall
 )
@@ -77,9 +68,6 @@ function Read-WithDefault {
 
 # ── Interactive prompts for required values ────────────────────────────────────
 
-if ([string]::IsNullOrWhiteSpace($DeployDomainFqdn)) {
-    $DeployDomainFqdn = Read-Host 'Public FQDN (DNS A -> this host, e.g. proxy.example.com)'
-}
 if ([string]::IsNullOrWhiteSpace($RunnerName)) {
     $RunnerName = Read-Host 'Runner name (unique on GitHub, e.g. proxy-node-01)'
 }
@@ -89,20 +77,11 @@ if ([string]::IsNullOrWhiteSpace($RegistrationToken)) {
 if ([string]::IsNullOrWhiteSpace($RepoUrl)) {
     $RepoUrl = Read-WithDefault -Prompt 'Repo URL' -Default 'https://github.com/alto-sec/Altosec-proxy-server'
 }
-if ([string]::IsNullOrWhiteSpace($AcmeEmail)) {
-    $AcmeEmail = Read-WithDefault -Prompt "Let's Encrypt contact email" -Default 'altosecteam@gmail.com'
-}
 
-$DeployDomainFqdn = $DeployDomainFqdn.Trim().ToLowerInvariant()
-$RunnerName        = $RunnerName.Trim()
-$AcmeEmail         = $AcmeEmail.Trim()
+$RunnerName = $RunnerName.Trim()
 
-if (-not $DeployDomainFqdn) { throw 'DeployDomainFqdn is required.' }
 if (-not $RunnerName)        { throw 'RunnerName is required.' }
 if (-not $RegistrationToken) { throw 'RegistrationToken is required.' }
-if ($AcmeEmail -match '(?i)@example\.(com|org|net)$') {
-    throw "Let's Encrypt rejects @example.com / .org / .net. Use a real mailbox."
-}
 
 # ── Step 1: WSL2 feature + distro ─────────────────────────────────────────────
 
@@ -235,14 +214,12 @@ if (-not (Test-Path $bootstrapWin)) {
 $bootstrapWsl = ($bootstrapWin -replace '\\', '/') -replace '^([A-Za-z]):', { "/mnt/$($_.Groups[1].Value.ToLower())" }
 
 $bootstrapArgs = @(
-    "--repo-url",      $RepoUrl,
-    "--token",         $RegistrationToken,
-    "--runner-name",   $RunnerName,
-    "--deploy-domain", $DeployDomainFqdn,
-    "--deploy-dir",    $DeployDir,
-    "--runner-root",   $RunnerRoot
+    "--repo-url",    $RepoUrl,
+    "--token",       $RegistrationToken,
+    "--runner-name", $RunnerName,
+    "--deploy-dir",  $DeployDir,
+    "--runner-root", $RunnerRoot
 )
-if ($AcmeEmail) { $bootstrapArgs += @("--acme-email", $AcmeEmail) }
 
 $argsStr = ($bootstrapArgs | ForEach-Object { "'$_'" }) -join ' '
 $cmd = "bash '$bootstrapWsl' $argsStr"
@@ -282,10 +259,9 @@ Write-Host ''
 Write-Host '=== prepare-wsl2.ps1 complete ==='
 Write-Host "  WSL2 distro          : $WslDistro"
 Write-Host "  .wslconfig           : networkingMode=mirrored ($wslCfgPath)"
-Write-Host "  Deploy domain        : $DeployDomainFqdn"
 Write-Host "  Deploy dir (WSL2)    : $DeployDir"
 Write-Host "  Runner name          : $RunnerName"
 Write-Host "  Boot task            : $taskName (SYSTEM, at-startup)"
 Write-Host ''
 Write-Host 'Next: confirm the runner shows Idle in GitHub -> Settings -> Actions -> Runners,'
-Write-Host 'then trigger the Deploy workflow (handles docker pull, TLS cert, and compose up).'
+Write-Host 'then trigger the Deploy workflow (handles docker pull and compose up).'
