@@ -173,22 +173,30 @@ if (-not (Test-Path $wslCfgPath)) {
 
 Write-Host '=== Step 3: Enable systemd in WSL2 ==='
 
-& wsl -d $WslDistro -u root -- bash -c @'
-set -e
-CFG=/etc/wsl.conf
-if grep -q '^\[boot\]' "$CFG" 2>/dev/null; then
-  if grep -q 'systemd' "$CFG"; then
-    sed -i 's/^systemd\s*=.*/systemd=true/' "$CFG"
-  else
-    sed -i '/^\[boot\]/a systemd=true' "$CFG"
-  fi
-else
-  printf '\n[boot]\nsystemd=true\n' >> "$CFG"
-fi
-echo "wsl.conf updated: $(cat $CFG)"
-'@
-if ($LASTEXITCODE -ne 0) { throw "Failed to configure systemd in WSL2." }
-Write-Host '  [+] systemd enabled in WSL2 /etc/wsl.conf'
+# Write directly via \\wsl$\<distro> instead of running bash -u root inside WSL.
+# Ubuntu 24.04 with systemd tries to start systemd user@0.service when -u root
+# is used, which hangs indefinitely. The \\wsl$ Windows mount avoids this entirely.
+
+# Ensure the distro is running so \\wsl$ is accessible (run without -u root).
+$null = & wsl -d $WslDistro -- exit 0 2>$null
+
+$wslConfWin = "\\wsl$\$WslDistro\etc\wsl.conf"
+$cfg = if (Test-Path $wslConfWin) { Get-Content $wslConfWin -Raw } else { '' }
+
+if ($cfg -match '(?m)^\s*systemd\s*=\s*true') {
+    Write-Host '  [=] systemd already enabled in /etc/wsl.conf'
+} else {
+    if ($cfg -match '(?m)^\s*systemd\s*=') {
+        $cfg = $cfg -replace '(?m)^\s*systemd\s*=.*', 'systemd=true'
+    } elseif ($cfg -match '(?m)^\[boot\]') {
+        $cfg = $cfg -replace '(?m)(^\[boot\])', "`$1`nsystemd=true"
+    } else {
+        $trimmed = $cfg.TrimEnd()
+        $cfg = if ($trimmed) { "$trimmed`n`n[boot]`nsystemd=true`n" } else { "[boot]`nsystemd=true`n" }
+    }
+    [System.IO.File]::WriteAllText($wslConfWin, $cfg)
+    Write-Host '  [+] systemd=true written to /etc/wsl.conf'
+}
 
 # ── Step 4: Restart WSL2 so settings take effect ──────────────────────────────
 
@@ -228,7 +236,9 @@ $argsStr = ($bootstrapArgs | ForEach-Object { "'$_'" }) -join ' '
 $cmd = "bash '$bootstrapWsl' $argsStr"
 
 Write-Host "Running inside WSL2: $cmd"
-& wsl -d $WslDistro -u root -- bash -c $cmd
+# Run without -u root: fresh Ubuntu-24.04 WSL default user IS root, and explicit
+# -u root triggers systemd user@0.service setup which hangs on Ubuntu 24.04.
+& wsl -d $WslDistro -- bash -c $cmd
 if ($LASTEXITCODE -ne 0) { throw "bootstrap-node.sh failed (exit $LASTEXITCODE)" }
 
 # ── Step 6: Windows Task Scheduler — auto-start WSL2 on boot ──────────────────
