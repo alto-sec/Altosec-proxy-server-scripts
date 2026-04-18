@@ -160,45 +160,37 @@ if [[ "$RUNNER_USER" != "root" ]]; then
     chown -R "$RUNNER_USER:$RUNNER_USER" "$RUNNER_ROOT"
 fi
 
-# Re-configure if: no .runner file, or the registered name/repo differs from requested.
-CONFIGURED_NAME=""
-CONFIGURED_URL=""
-if [[ -f "$RUNNER_ROOT/.runner" ]]; then
-    CONFIGURED_NAME="$(python3 -c "import json; d=json.load(open('$RUNNER_ROOT/.runner')); print(d.get('agentName',''))" 2>/dev/null || true)"
-    CONFIGURED_URL="$(python3  -c "import json; d=json.load(open('$RUNNER_ROOT/.runner')); print(d.get('gitHubUrl',''))"  2>/dev/null || true)"
-fi
+log "Configuring runner (name=$RUNNER_NAME, repo=$REPO_URL)..."
+LABELS="self-hosted,Linux,altosec-proxy-node,${RUNNER_NAME}"
 
-if [[ -z "$CONFIGURED_NAME" || "$CONFIGURED_NAME" != "$RUNNER_NAME" || "$CONFIGURED_URL" != "$REPO_URL" ]]; then
-    log "Configuring runner (name=$RUNNER_NAME, repo=$REPO_URL)..."
-    LABELS="self-hosted,Linux,altosec-proxy-node,${RUNNER_NAME}"
-    # Stop and uninstall any existing service before reconfiguring.
-    pushd "$RUNNER_ROOT" > /dev/null
-    RUNNER_ALLOW_RUNASROOT=1 ./svc.sh stop     2>/dev/null || true
-    RUNNER_ALLOW_RUNASROOT=1 ./svc.sh uninstall 2>/dev/null || true
-    popd > /dev/null
-    if [[ "$RUNNER_USER" == "root" ]]; then
-        RUNNER_ALLOW_RUNASROOT=1 \
-        "$RUNNER_ROOT/config.sh" \
-            --url "$REPO_URL" \
-            --token "$RUNNER_TOKEN" \
-            --name "$RUNNER_NAME" \
-            --labels "$LABELS" \
-            --unattended \
-            --replace
-    else
-        sudo -u "$RUNNER_USER" \
-        "$RUNNER_ROOT/config.sh" \
-            --url "$REPO_URL" \
-            --token "$RUNNER_TOKEN" \
-            --name "$RUNNER_NAME" \
-            --labels "$LABELS" \
-            --unattended \
-            --replace
-    fi
-    log "Runner configured."
+# Always do a clean reconfigure: stop service, uninstall, wipe local config files.
+# This ensures stale registrations (wrong name/repo) never block a fresh setup.
+pushd "$RUNNER_ROOT" > /dev/null
+RUNNER_ALLOW_RUNASROOT=1 ./svc.sh stop      2>/dev/null || true
+RUNNER_ALLOW_RUNASROOT=1 ./svc.sh uninstall 2>/dev/null || true
+popd > /dev/null
+rm -f "$RUNNER_ROOT/.runner" "$RUNNER_ROOT/.credentials" "$RUNNER_ROOT/.credentials_rsaparams"
+
+if [[ "$RUNNER_USER" == "root" ]]; then
+    RUNNER_ALLOW_RUNASROOT=1 \
+    "$RUNNER_ROOT/config.sh" \
+        --url "$REPO_URL" \
+        --token "$RUNNER_TOKEN" \
+        --name "$RUNNER_NAME" \
+        --labels "$LABELS" \
+        --unattended \
+        --replace
 else
-    log "Runner already configured as '$CONFIGURED_NAME' for $CONFIGURED_URL — skipping config."
+    sudo -u "$RUNNER_USER" \
+    "$RUNNER_ROOT/config.sh" \
+        --url "$REPO_URL" \
+        --token "$RUNNER_TOKEN" \
+        --name "$RUNNER_NAME" \
+        --labels "$LABELS" \
+        --unattended \
+        --replace
 fi
+log "Runner configured."
 
 # Install (or reinstall) the systemd service for this specific runner.
 SVCNAME=""
