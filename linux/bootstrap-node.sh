@@ -163,13 +163,20 @@ fi
 log "Configuring runner (name=$RUNNER_NAME, repo=$REPO_URL)..."
 LABELS="self-hosted,Linux,altosec-proxy-node,${RUNNER_NAME}"
 
-# Always do a clean reconfigure: stop service, uninstall, wipe local config files.
-# This ensures stale registrations (wrong name/repo) never block a fresh setup.
-pushd "$RUNNER_ROOT" > /dev/null
-RUNNER_ALLOW_RUNASROOT=1 ./svc.sh stop      2>/dev/null || true
-RUNNER_ALLOW_RUNASROOT=1 ./svc.sh uninstall 2>/dev/null || true
-popd > /dev/null
+# Nuclear cleanup: stop ALL runner services, kill any lingering process, wipe config.
+# svc.sh stop/uninstall alone is unreliable when the service name has changed.
+for _svc in $(ls /etc/systemd/system/actions.runner.*.service 2>/dev/null); do
+    systemctl stop    "$(basename "$_svc")" 2>/dev/null || true
+    systemctl disable "$(basename "$_svc")" 2>/dev/null || true
+    rm -f "$_svc"
+done
+systemctl daemon-reload 2>/dev/null || true
+pkill -9 -f "Runner.Listener" 2>/dev/null || true
+sleep 1
 rm -f "$RUNNER_ROOT/.runner" "$RUNNER_ROOT/.credentials" "$RUNNER_ROOT/.credentials_rsaparams"
+if [[ -f "$RUNNER_ROOT/.runner" ]]; then
+    err ".runner could not be removed from $RUNNER_ROOT — check permissions"
+fi
 
 if [[ "$RUNNER_USER" == "root" ]]; then
     RUNNER_ALLOW_RUNASROOT=1 \
