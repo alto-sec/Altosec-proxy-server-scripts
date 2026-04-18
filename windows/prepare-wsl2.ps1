@@ -225,27 +225,6 @@ Write-Host 'WSL2 restarted.'
 
 Write-Host '=== Step 5: Running bootstrap-node.sh inside WSL2 ==='
 
-# Find bootstrap-node.sh: first look relative to this script (repo clone),
-# then fall back to downloading from the public scripts repo.
-$bootstrapWin = $null
-$scriptDir = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
-if ($scriptDir) {
-    $candidate = Join-Path (Resolve-Path (Join-Path $scriptDir '..\..') -ErrorAction SilentlyContinue) 'scripts\linux\bootstrap-node.sh'
-    if ($candidate -and (Test-Path $candidate)) { $bootstrapWin = $candidate }
-}
-
-if (-not $bootstrapWin) {
-    $rawUrl      = 'https://raw.githubusercontent.com/alto-sec/Altosec-proxy-server-scripts/main/linux/bootstrap-node.sh'
-    $bootstrapWin = Join-Path $env:TEMP 'bootstrap-node.sh'
-    Write-Host "Downloading bootstrap-node.sh from $rawUrl ..."
-    Invoke-WebRequest -Uri $rawUrl -OutFile $bootstrapWin -UseBasicParsing
-}
-
-# Convert Windows path to WSL2 path (C:\foo\bar -> /mnt/c/foo/bar).
-# Note: scriptblock replacements in -replace require PowerShell 6+; use explicit string ops for PS 5.1.
-$bootstrapWsl = $bootstrapWin -replace '\\', '/'
-$bootstrapWsl = '/mnt/' + $bootstrapWsl[0].ToString().ToLower() + $bootstrapWsl.Substring(2)
-
 $bootstrapArgs = @(
     "--repo-url",    $RepoUrl,
     "--token",       $RegistrationToken,
@@ -253,14 +232,15 @@ $bootstrapArgs = @(
     "--deploy-dir",  $DeployDir,
     "--runner-root", $RunnerRoot
 )
+$innerArgsStr = ($bootstrapArgs | ForEach-Object { "'$_'" }) -join ' '
 
-$argsStr = ($bootstrapArgs | ForEach-Object { "'$_'" }) -join ' '
-$cmd = "bash '$bootstrapWsl' $argsStr"
+# Download bootstrap-node.sh directly inside WSL2 and run from /tmp (Linux filesystem).
+# Avoids Windows %TEMP% -> /mnt/c path conversion issues and permission quirks.
+$bootstrapUrl = 'https://raw.githubusercontent.com/alto-sec/Altosec-proxy-server-scripts/main/linux/bootstrap-node.sh'
+$wslCmd = "curl -fsSL '$bootstrapUrl' -o /tmp/altosec-bootstrap.sh && bash /tmp/altosec-bootstrap.sh $innerArgsStr"
 
-Write-Host "Running inside WSL2: $cmd"
-# Default user for fresh Ubuntu-24.04 WSL is root — no need for -u root.
-# Explicit -u root causes systemd user@0.service setup which can hang.
-& wsl -d $WslDistro -- bash -c $cmd
+Write-Host "Downloading and running bootstrap-node.sh inside WSL2..."
+& wsl -d $WslDistro -u root -- bash -c $wslCmd
 if ($LASTEXITCODE -ne 0) { throw "bootstrap-node.sh failed (exit $LASTEXITCODE)" }
 
 # ── Step 6: Windows Task Scheduler — auto-start WSL2 on boot ──────────────────
