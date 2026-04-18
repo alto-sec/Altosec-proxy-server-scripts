@@ -71,8 +71,11 @@ require_root
 
 log "=== Step 1: Docker Engine ==="
 
-if command -v docker &>/dev/null && docker info &>/dev/null 2>&1; then
-    log "Docker is already installed and running — skipping install."
+# Check for dockerd (the daemon binary), not just the docker client.
+# Docker Desktop WSL integration provides the docker client but not dockerd,
+# so checking only 'docker info' would skip Engine install when Desktop is running.
+if command -v dockerd &>/dev/null && docker info &>/dev/null 2>&1; then
+    log "Docker Engine is already installed and running — skipping install."
 else
     log "Installing Docker Engine via get.docker.com..."
     apt-get update -qq
