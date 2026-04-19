@@ -30,6 +30,14 @@ done
 
 cd "$DEPLOY_DIR"
 
+# Remove Docker Desktop credential helper if present — it's not available inside
+# WSL2 without Docker Desktop and causes "docker-credential-desktop.exe not found".
+DOCKER_CFG="${HOME}/.docker/config.json"
+if [[ -f "$DOCKER_CFG" ]] && grep -q 'desktop' "$DOCKER_CFG"; then
+    sed -i '/"credsStore"/d' "$DOCKER_CFG" || true
+    log "Removed Docker Desktop credential helper from Docker config."
+fi
+
 if $USE_GHCR; then
     COMPOSE_BASE="docker-compose.ghcr.yml"
 else
