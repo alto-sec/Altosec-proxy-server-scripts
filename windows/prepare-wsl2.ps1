@@ -147,14 +147,17 @@ After rebooting, re-run this script. WSL2 will be ready on the next run.
         }
         Write-Host "Distro $WslDistro installed."
 
-        # Wait for distro to be usable (first-boot provisioning).
+        # Wait for distro to be usable. Use -u root to bypass the interactive
+        # first-boot user-creation prompt that Ubuntu shows on first launch.
         Write-Host 'Waiting for distro to finish first-boot setup (up to 120 s)...'
         $deadline = (Get-Date).AddSeconds(120)
         while ((Get-Date) -lt $deadline) {
-            $test = & wsl -d $WslDistro -- echo ready 2>&1
+            $test = & wsl -d $WslDistro -u root -- echo ready 2>&1
             if ("$test" -match 'ready') { break }
             Start-Sleep -Seconds 5
         }
+        # Set root as the default user so subsequent wsl invocations don't prompt.
+        & wsl -d $WslDistro -u root -- bash -c "echo '[user]' >> /etc/wsl.conf; echo 'default=root' >> /etc/wsl.conf" 2>$null
     } else {
         Write-Host "$WslDistro is already installed."
     }
