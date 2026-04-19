@@ -163,19 +163,33 @@ fi
 log "Configuring runner (name=$RUNNER_NAME, repo=$REPO_URL)..."
 LABELS="self-hosted,Linux,altosec-proxy-node,${RUNNER_NAME}"
 
-# Nuclear cleanup: stop ALL runner services, kill any lingering process, wipe config.
-# svc.sh stop/uninstall alone is unreliable when the service name has changed.
-for _svc in $(ls /etc/systemd/system/actions.runner.*.service 2>/dev/null); do
-    systemctl stop    "$(basename "$_svc")" 2>/dev/null || true
-    systemctl disable "$(basename "$_svc")" 2>/dev/null || true
+# Disable exit-on-error for the cleanup phase — runner binaries return non-zero
+# on "not installed" etc., which would otherwise kill the script under set -euo pipefail.
+set +e
+
+# Stop and remove every runner systemd service on this machine.
+for _svc in /etc/systemd/system/actions.runner.*.service; do
+    [[ -f "$_svc" ]] || continue
+    systemctl stop    "$(basename "$_svc")" 2>/dev/null
+    systemctl disable "$(basename "$_svc")" 2>/dev/null
     rm -f "$_svc"
 done
-systemctl daemon-reload 2>/dev/null || true
-pkill -9 -f "Runner.Listener" 2>/dev/null || true
+systemctl daemon-reload 2>/dev/null
+
+# Kill any still-running runner process.
+pkill -9 -f "Runner.Listener" 2>/dev/null
 sleep 1
-rm -f "$RUNNER_ROOT/.runner" "$RUNNER_ROOT/.credentials" "$RUNNER_ROOT/.credentials_rsaparams"
+
+# Remove the local runner configuration files.
+rm -f "$RUNNER_ROOT/.runner"
+rm -f "$RUNNER_ROOT/.credentials"
+rm -f "$RUNNER_ROOT/.credentials_rsaparams"
+
+set -e
+
+# Sanity-check: config.sh will refuse to run if .runner still exists.
 if [[ -f "$RUNNER_ROOT/.runner" ]]; then
-    err ".runner could not be removed from $RUNNER_ROOT — check permissions"
+    err ".runner still exists after cleanup in $RUNNER_ROOT — check permissions"
 fi
 
 if [[ "$RUNNER_USER" == "root" ]]; then
@@ -199,27 +213,27 @@ else
 fi
 log "Runner configured."
 
-# Install (or reinstall) the systemd service for this specific runner.
-SVCNAME=""
+# Start Docker Engine (SysV init fallback — works without systemd).
+service docker start 2>/dev/null || true
+log "Docker service started."
+
+# Start the runner in the background. On WSL2 without systemd the Windows Task
+# Scheduler handles persistence across reboots, so we just launch it now so the
+# runner goes Idle immediately after provisioning.
+log "Starting runner in background (logging to /tmp/runner.log)..."
 pushd "$RUNNER_ROOT" > /dev/null
 if [[ "$RUNNER_USER" == "root" ]]; then
-    RUNNER_ALLOW_RUNASROOT=1 ./svc.sh install root 2>/dev/null || true
+    nohup bash -c "RUNNER_ALLOW_RUNASROOT=1 ./run.sh >> /tmp/runner.log 2>&1" &
 else
-    ./svc.sh install "$RUNNER_USER" 2>/dev/null || true
+    nohup sudo -u "$RUNNER_USER" bash -c "./run.sh >> /tmp/runner.log 2>&1" &
 fi
-# Find the service that matches this runner name specifically.
-SVCNAME="$(ls /etc/systemd/system/actions.runner.*.service 2>/dev/null | grep -F "$RUNNER_NAME" | head -1)"
-# Fallback: if none matched by name, pick the most recently modified one.
-[[ -z "$SVCNAME" ]] && SVCNAME="$(ls -t /etc/systemd/system/actions.runner.*.service 2>/dev/null | head -1)"
+RUNNER_PID=$!
 popd > /dev/null
-
-if [[ -n "$SVCNAME" ]]; then
-    systemctl daemon-reload
-    systemctl enable "$(basename "$SVCNAME")"
-    systemctl restart "$(basename "$SVCNAME")"
-    log "Runner service $(basename "$SVCNAME") enabled and started."
+sleep 3
+if kill -0 "$RUNNER_PID" 2>/dev/null; then
+    log "Runner started (PID=$RUNNER_PID). Logs: /tmp/runner.log"
 else
-    log "WARNING: Could not determine runner service name. Start manually: cd $RUNNER_ROOT && ./run.sh"
+    log "WARNING: Runner process exited quickly. Check /tmp/runner.log"
 fi
 
 # ── Done ──────────────────────────────────────────────────────────────────────
@@ -231,5 +245,6 @@ log "  Deploy dir     : $DEPLOY_DIR"
 log "  Runner root    : $RUNNER_ROOT"
 log "  Runner name    : $RUNNER_NAME"
 log ""
-log "Next: confirm the runner shows 'Idle' in GitHub -> Settings -> Actions -> Runners,"
-log "then trigger the Deploy workflow (docker pull + compose up on port 80)."
+log "Next: confirm the runner shows 'Idle' in GitHub -> Settings -> Actions -> Runners."
+log "Runner logs: /tmp/runner.log — check there if it does not appear within 30 s."
+log "On reboot: Windows Task Scheduler restarts WSL2 + runner automatically."

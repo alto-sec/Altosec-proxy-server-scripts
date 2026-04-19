@@ -7,12 +7,12 @@
     1. Verifies WSL2 is available (enables it via DISM if needed — requires reboot on first-time setup).
     2. Installs Ubuntu 24.04 WSL2 distro if no suitable distro is present.
     3. Writes ~/.wslconfig with networkingMode=mirrored (real client IPs visible inside containers).
-    4. Enables systemd inside WSL2 (/etc/wsl.conf boot.systemd=true).
-    5. Shuts down and restarts WSL2 so the new settings take effect.
-    6. Runs scripts/linux/bootstrap-node.sh INSIDE WSL2 (installs Docker Engine,
-       GitHub Actions runner, systemd services — the same script used on native Linux).
-    7. Creates a Windows Task Scheduler task that starts WSL2 Ubuntu on system boot,
-       so Docker and the runner come up automatically after a Windows restart.
+    4. Shuts down and restarts WSL2 so the new settings take effect.
+    5. Runs scripts/linux/bootstrap-node.sh INSIDE WSL2 (installs Docker Engine,
+       GitHub Actions runner — the same script used on native Linux).
+       Note: systemd is NOT required or enabled. Docker and the runner start via SysV init
+       and the Windows Task Scheduler task respectively.
+    6. Creates a Windows Task Scheduler task that starts Docker + the runner on Windows boot.
 
   TLS is handled by the upstream nginx reverse proxy. This server runs plain HTTP on port 80.
   After this script completes the node is fully provisioned. The GitHub Actions Deploy workflow
@@ -180,40 +180,9 @@ if (-not (Test-Path $wslCfgPath)) {
     }
 }
 
-# ── Step 3: Enable systemd in WSL2 ────────────────────────────────────────────
+# ── Step 3: Restart WSL2 so settings take effect ─────────────────────────────
 
-Write-Host '=== Step 3: Enable systemd in WSL2 ==='
-
-# Modify /etc/wsl.conf directly via the Windows \\wsl$ filesystem mount.
-# This avoids running bash inside the distro at this stage — Ubuntu 24.04 with
-# systemd already enabled can produce stderr warnings that interfere with scripting.
-# Accessing \\wsl$\<distro> auto-starts the distro if it is not already running.
-
-$wslConfWin = "\\wsl$\$WslDistro\etc\wsl.conf"
-$cfg = ''
-if (Test-Path $wslConfWin) {
-    $cfg = Get-Content $wslConfWin -Raw -ErrorAction SilentlyContinue
-    if (-not $cfg) { $cfg = '' }
-}
-
-if ($cfg -match '(?m)^\s*systemd\s*=\s*true') {
-    Write-Host '  [=] systemd already enabled in /etc/wsl.conf'
-} else {
-    if ($cfg -match '(?m)^\s*systemd\s*=') {
-        $cfg = $cfg -replace '(?m)^\s*systemd\s*=.*', 'systemd=true'
-    } elseif ($cfg -match '(?m)^\[boot\]') {
-        $cfg = $cfg -replace '(?m)(^\[boot\])', "`$1`nsystemd=true"
-    } else {
-        $trimmed = $cfg.TrimEnd()
-        $cfg = if ($trimmed) { "$trimmed`n`n[boot]`nsystemd=true`n" } else { "[boot]`nsystemd=true`n" }
-    }
-    [System.IO.File]::WriteAllText($wslConfWin, $cfg)
-    Write-Host '  [+] systemd=true written to /etc/wsl.conf'
-}
-
-# ── Step 4: Restart WSL2 so settings take effect ──────────────────────────────
-
-Write-Host '=== Step 4: Restarting WSL2 ==='
+Write-Host '=== Step 3: Restarting WSL2 ==='
 & wsl --shutdown
 Start-Sleep -Seconds 8
 
@@ -221,9 +190,9 @@ Start-Sleep -Seconds 8
 & wsl -d $WslDistro -- echo 'WSL2 restarted' 2>&1 | Out-Null
 Write-Host 'WSL2 restarted.'
 
-# ── Step 5: Run bootstrap-node.sh inside WSL2 ─────────────────────────────────
+# ── Step 4: Run bootstrap-node.sh inside WSL2 ────────────────────────────────
 
-Write-Host '=== Step 5: Running bootstrap-node.sh inside WSL2 ==='
+Write-Host '=== Step 4: Running bootstrap-node.sh inside WSL2 ==='
 
 $bootstrapArgs = @(
     "--repo-url",    $RepoUrl,
@@ -243,18 +212,19 @@ Write-Host "Downloading and running bootstrap-node.sh inside WSL2..."
 & wsl -d $WslDistro -u root -- bash -c $wslCmd
 if ($LASTEXITCODE -ne 0) { throw "bootstrap-node.sh failed (exit $LASTEXITCODE)" }
 
-# ── Step 6: Windows Task Scheduler — auto-start WSL2 on boot ──────────────────
+# ── Step 5: Windows Task Scheduler — auto-start Docker + runner on boot ───────
 
-Write-Host '=== Step 6: Task Scheduler — auto-start WSL2 on Windows boot ==='
+Write-Host '=== Step 5: Task Scheduler — auto-start runner on Windows boot ==='
 
 $taskName   = 'AltosecProxyWsl2Autostart'
 $taskExists = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
 
-# Startup command: wake WSL2 distro so systemd (docker + runner) comes up automatically.
-# No -u root: default user is root, and explicit -u root can hang due to systemd user session.
+# Startup command: start Docker Engine then the Actions runner (no systemd required).
+# service docker start works on Ubuntu even without systemd (uses SysV init fallback).
+$runnerStartCmd = "service docker start 2>/dev/null; nohup bash -c 'cd $RunnerRoot && RUNNER_ALLOW_RUNASROOT=1 ./run.sh >> /tmp/runner.log 2>&1' &"
 $action  = New-ScheduledTaskAction `
     -Execute 'wsl.exe' `
-    -Argument "-d $WslDistro -- bash -c `"systemctl start docker 2>/dev/null; exit 0`""
+    -Argument "-d $WslDistro -u root -- bash -c `"$runnerStartCmd`""
 $trigger = New-ScheduledTaskTrigger -AtStartup
 $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 5)
 $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -RunLevel Highest
