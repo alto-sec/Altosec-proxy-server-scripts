@@ -234,17 +234,19 @@ if ($LASTEXITCODE -ne 0) { throw "bootstrap-node.sh failed (exit $LASTEXITCODE)"
 Write-Host '=== Step 5: Task Scheduler — auto-start runner on Windows boot ==='
 
 $taskName   = 'AltosecProxyWsl2Autostart'
-$taskExists = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+$watchdogName = 'AltosecProxyRunnerWatchdog'
+$taskExists    = Get-ScheduledTask -TaskName $taskName     -ErrorAction SilentlyContinue
+$watchdogExists = Get-ScheduledTask -TaskName $watchdogName -ErrorAction SilentlyContinue
 
-# Startup command: start Docker Engine then the Actions runner (no systemd required).
-# service docker start works on Ubuntu even without systemd (uses SysV init fallback).
-$runnerStartCmd = "service docker start 2>/dev/null; nohup bash -c 'cd $RunnerRoot && RUNNER_ALLOW_RUNASROOT=1 ./run.sh >> /tmp/runner.log 2>&1' &"
+$principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -RunLevel Highest
+
+# ── Boot task: start Docker + runner on Windows startup ──────────────────────
+$runnerStartCmd = "service docker start 2>/dev/null; pgrep -f Runner.Listener > /dev/null 2>&1 || nohup bash -c 'cd $RunnerRoot && RUNNER_ALLOW_RUNASROOT=1 ./run.sh >> /tmp/runner.log 2>&1' &"
 $action  = New-ScheduledTaskAction `
     -Execute 'wsl.exe' `
     -Argument "-d $WslDistro -u root -- bash -c `"$runnerStartCmd`""
-$trigger = New-ScheduledTaskTrigger -AtStartup
+$trigger  = New-ScheduledTaskTrigger -AtStartup
 $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 5)
-$principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -RunLevel Highest
 
 if ($taskExists) {
     Set-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger `
@@ -254,6 +256,24 @@ if ($taskExists) {
     Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger `
         -Settings $settings -Principal $principal -Force | Out-Null
     Write-Host "  [+] Created scheduled task '$taskName' (runs as SYSTEM at startup)."
+}
+
+# ── Watchdog task: restart runner every 2 min if it died (e.g. after wsl --shutdown) ──
+$watchdogCmd = "pgrep -f Runner.Listener > /dev/null 2>&1 || (service docker start 2>/dev/null; nohup bash -c 'cd $RunnerRoot && RUNNER_ALLOW_RUNASROOT=1 ./run.sh >> /tmp/runner.log 2>&1' &)"
+$wAction   = New-ScheduledTaskAction `
+    -Execute 'wsl.exe' `
+    -Argument "-d $WslDistro -u root -- bash -c `"$watchdogCmd`""
+$wTrigger  = New-ScheduledTaskTrigger -RepetitionInterval (New-TimeSpan -Minutes 2) -Once -At (Get-Date)
+$wSettings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 1)
+
+if ($watchdogExists) {
+    Set-ScheduledTask -TaskName $watchdogName -Action $wAction -Trigger $wTrigger `
+        -Settings $wSettings -Principal $principal | Out-Null
+    Write-Host "  [=] Updated watchdog task '$watchdogName'."
+} else {
+    Register-ScheduledTask -TaskName $watchdogName -Action $wAction -Trigger $wTrigger `
+        -Settings $wSettings -Principal $principal -Force | Out-Null
+    Write-Host "  [+] Created watchdog task '$watchdogName' (runs every 2 min as SYSTEM)."
 }
 
 # ── Done ──────────────────────────────────────────────────────────────────────
