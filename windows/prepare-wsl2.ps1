@@ -100,8 +100,13 @@ if (-not $SkipWslInstall) {
 
     if (-not $wslReady) {
         Write-Host 'Enabling WSL2 via DISM (requires administrator)...'
+        # dism.exe inherits PowerShell's working directory. When the script is run
+        # via iex(irm...) the CWD can be a path native processes can't resolve.
+        # Push-Location to SystemRoot before calling dism to avoid this.
+        Push-Location $env:SystemRoot
         dism.exe /Online /Enable-Feature /FeatureName:Microsoft-Windows-Subsystem-Linux /All /NoRestart | Out-Null
         dism.exe /Online /Enable-Feature /FeatureName:VirtualMachinePlatform /All /NoRestart | Out-Null
+        Pop-Location
         Write-Warning @'
 WSL2 features were just enabled. A REBOOT is required before continuing.
 After rebooting, re-run this script. WSL2 will be ready on the next run.
