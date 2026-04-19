@@ -146,16 +146,22 @@ log "ALTOSEC_DEPLOY_DIR written to ${RUNNER_ENV_FILE} (runner systemd Environmen
 
 log "=== Step 4: GitHub Actions runner ==="
 
+# Kill any running runner processes first.
+pkill -9 -f "Runner.Listener" 2>/dev/null || true
+pkill -9 -f "Runner.Worker"   2>/dev/null || true
+sleep 2
+
+# Wipe the runner directory for a guaranteed clean state, then re-download.
+rm -rf "$RUNNER_ROOT"
+rm -f /etc/systemd/system/actions.runner.*.service 2>/dev/null || true
 mkdir -p "$RUNNER_ROOT"
 
-if [[ ! -f "$RUNNER_ROOT/config.sh" ]]; then
-    log "Downloading latest GitHub Actions runner (linux-x64)..."
-    RUNNER_REL="$(curl -fsSL https://api.github.com/repos/actions/runner/releases/latest)"
-    RUNNER_URL="$(echo "$RUNNER_REL" | grep -oP '"browser_download_url":\s*"\K[^"]+actions-runner-linux-x64-[\d.]+\.tar\.gz')"
-    [[ -z "$RUNNER_URL" ]] && err "Could not determine latest runner download URL."
-    curl -fsSL "$RUNNER_URL" | tar -xz -C "$RUNNER_ROOT"
-    log "Runner extracted to $RUNNER_ROOT."
-fi
+log "Downloading latest GitHub Actions runner (linux-x64)..."
+RUNNER_REL="$(curl -fsSL https://api.github.com/repos/actions/runner/releases/latest)"
+RUNNER_URL="$(echo "$RUNNER_REL" | grep -oP '"browser_download_url":\s*"\K[^"]+actions-runner-linux-x64-[\d.]+\.tar\.gz')"
+[[ -z "$RUNNER_URL" ]] && err "Could not determine latest runner download URL."
+curl -fsSL "$RUNNER_URL" | tar -xz -C "$RUNNER_ROOT"
+log "Runner extracted to $RUNNER_ROOT."
 
 if [[ "$RUNNER_USER" != "root" ]]; then
     chown -R "$RUNNER_USER:$RUNNER_USER" "$RUNNER_ROOT"
@@ -163,20 +169,6 @@ fi
 
 log "Configuring runner (name=$RUNNER_NAME, repo=$REPO_URL)..."
 LABELS="self-hosted,Linux,altosec-proxy-node,${RUNNER_NAME}"
-
-# Kill any running runner processes.
-pkill -9 -f "Runner.Listener" 2>/dev/null || true
-pkill -9 -f "Runner.Worker"   2>/dev/null || true
-sleep 2
-
-# Nuke the entire runner directory for a guaranteed clean state, then re-create
-# it so the download check below re-extracts the runner binary fresh.
-# This is the only reliable way to clear all config files regardless of
-# permissions, immutable bits, or which files the runner binary checks.
-rm -rf "$RUNNER_ROOT"
-mkdir -p "$RUNNER_ROOT"
-log "Runner directory wiped — will re-download runner binary."
-rm -f /etc/systemd/system/actions.runner.*.service 2>/dev/null || true
 
 if [[ "$RUNNER_USER" == "root" ]]; then
     RUNNER_ALLOW_RUNASROOT=1 \
