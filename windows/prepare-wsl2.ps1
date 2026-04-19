@@ -93,10 +93,11 @@ if (-not $RegistrationToken) { throw 'RegistrationToken is required.' }
 if (-not $SkipWslInstall) {
     Write-Host '=== Step 1: WSL2 feature and Ubuntu distro ==='
 
-    # Check if WSL2 is already functional.
-    $wslCheck = $null
-    try { $wslCheck = & wsl -l -v 2>&1 } catch { }
-    $wslReady = ($null -ne $wslCheck) -and ($LASTEXITCODE -eq 0)
+    # Check if WSL2 kernel is installed. Use 'wsl --version' rather than
+    # 'wsl -l -v' because the latter returns exit code 1 when no distros are
+    # installed, causing a false "not ready" result on clean machines.
+    $wslReady = $false
+    try { & wsl --version 2>&1 | Out-Null; $wslReady = ($LASTEXITCODE -eq 0) } catch { }
 
     if (-not $wslReady) {
         # On Windows 11, 'wsl --install' handles features + kernel in one step.
