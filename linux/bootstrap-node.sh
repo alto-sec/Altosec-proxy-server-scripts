@@ -169,14 +169,14 @@ pkill -9 -f "Runner.Listener" 2>/dev/null || true
 pkill -9 -f "Runner.Worker"   2>/dev/null || true
 sleep 2
 
-# Unconditionally remove all runner config files. Newer runner versions check
-# .credentials (not .runner) to decide if already configured, so we must
-# delete all three regardless of which ones exist.
-rm -f "$RUNNER_ROOT/.runner" \
-      "$RUNNER_ROOT/.credentials" \
-      "$RUNNER_ROOT/.credentials_rsaparams" || true
+# Nuke the entire runner directory for a guaranteed clean state, then re-create
+# it so the download check below re-extracts the runner binary fresh.
+# This is the only reliable way to clear all config files regardless of
+# permissions, immutable bits, or which files the runner binary checks.
+rm -rf "$RUNNER_ROOT"
+mkdir -p "$RUNNER_ROOT"
+log "Runner directory wiped — will re-download runner binary."
 rm -f /etc/systemd/system/actions.runner.*.service 2>/dev/null || true
-log "Runner config files cleared."
 
 if [[ "$RUNNER_USER" == "root" ]]; then
     RUNNER_ALLOW_RUNASROOT=1 \
