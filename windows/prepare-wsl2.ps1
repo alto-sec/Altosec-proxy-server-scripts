@@ -99,16 +99,24 @@ if (-not $SkipWslInstall) {
     $wslReady = ($null -ne $wslCheck) -and ($LASTEXITCODE -eq 0)
 
     if (-not $wslReady) {
-        Write-Host 'Enabling WSL2 via DISM (requires administrator)...'
-        # dism.exe inherits PowerShell's working directory. When the script is run
-        # via iex(irm...) the CWD can be a path native processes can't resolve.
-        # Push-Location to SystemRoot before calling dism to avoid this.
-        Push-Location $env:SystemRoot
-        dism.exe /Online /Enable-Feature /FeatureName:Microsoft-Windows-Subsystem-Linux /All /NoRestart | Out-Null
-        dism.exe /Online /Enable-Feature /FeatureName:VirtualMachinePlatform /All /NoRestart | Out-Null
-        Pop-Location
+        # On Windows 11, 'wsl --install' handles features + kernel in one step.
+        # DISM alone only enables optional features but does NOT install the WSL
+        # kernel, so wsl.exe remains non-functional after reboot.
+        Write-Host 'Installing WSL2 (wsl --install --no-distribution)...'
+        $wslInstallOut = & wsl --install --no-distribution 2>&1
+        $wslInstallEC  = $LASTEXITCODE
+
+        if ($wslInstallEC -ne 0) {
+            # Fallback for older Windows 10 builds where wsl --install is unavailable.
+            Write-Host 'wsl --install failed — falling back to DISM...'
+            Push-Location $env:SystemRoot
+            dism.exe /Online /Enable-Feature /FeatureName:Microsoft-Windows-Subsystem-Linux /All /NoRestart | Out-Null
+            dism.exe /Online /Enable-Feature /FeatureName:VirtualMachinePlatform /All /NoRestart | Out-Null
+            Pop-Location
+        }
+
         Write-Warning @'
-WSL2 features were just enabled. A REBOOT is required before continuing.
+WSL2 was just installed/enabled. A REBOOT is required before continuing.
 After rebooting, re-run this script. WSL2 will be ready on the next run.
 '@
         exit 0
