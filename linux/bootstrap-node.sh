@@ -164,34 +164,19 @@ fi
 log "Configuring runner (name=$RUNNER_NAME, repo=$REPO_URL)..."
 LABELS="self-hosted,Linux,altosec-proxy-node,${RUNNER_NAME}"
 
-# Disable exit-on-error for the cleanup phase — runner binaries return non-zero
-# on "not installed" etc., which would otherwise kill the script under set -euo pipefail.
-set +e
-
-# Stop and remove every runner systemd service on this machine.
-for _svc in /etc/systemd/system/actions.runner.*.service; do
-    [[ -f "$_svc" ]] || continue
-    systemctl stop    "$(basename "$_svc")" 2>/dev/null
-    systemctl disable "$(basename "$_svc")" 2>/dev/null
-    rm -f "$_svc"
-done
-systemctl daemon-reload 2>/dev/null
-
-# Kill any still-running runner process.
-pkill -9 -f "Runner.Listener" 2>/dev/null
+# Kill any running runner processes (|| true so set -e is never triggered).
+pkill -9 -f "Runner.Listener" 2>/dev/null || true
+pkill -9 -f "Runner.Worker"   2>/dev/null || true
 sleep 1
 
-# Remove the local runner configuration files.
+# Remove local runner config files unconditionally — config.sh refuses to run if
+# these exist regardless of --replace.
 rm -f "$RUNNER_ROOT/.runner"
 rm -f "$RUNNER_ROOT/.credentials"
 rm -f "$RUNNER_ROOT/.credentials_rsaparams"
 
-set -e
-
-# Sanity-check: config.sh will refuse to run if .runner still exists.
-if [[ -f "$RUNNER_ROOT/.runner" ]]; then
-    err ".runner still exists after cleanup in $RUNNER_ROOT — check permissions"
-fi
+# Remove stale systemd service files if any (best-effort, no systemctl needed).
+rm -f /etc/systemd/system/actions.runner.*.service 2>/dev/null || true
 
 if [[ "$RUNNER_USER" == "root" ]]; then
     RUNNER_ALLOW_RUNASROOT=1 \
