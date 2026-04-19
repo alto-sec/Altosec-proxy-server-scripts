@@ -164,19 +164,32 @@ fi
 log "Configuring runner (name=$RUNNER_NAME, repo=$REPO_URL)..."
 LABELS="self-hosted,Linux,altosec-proxy-node,${RUNNER_NAME}"
 
-# Kill any running runner processes (|| true so set -e is never triggered).
+# Kill any running runner processes.
 pkill -9 -f "Runner.Listener" 2>/dev/null || true
 pkill -9 -f "Runner.Worker"   2>/dev/null || true
-sleep 1
+sleep 2
 
-# Remove local runner config files unconditionally — config.sh refuses to run if
-# these exist regardless of --replace.
-rm -f "$RUNNER_ROOT/.runner"
-rm -f "$RUNNER_ROOT/.credentials"
-rm -f "$RUNNER_ROOT/.credentials_rsaparams"
+# Use the official removal method first (deregisters from GitHub).
+if [[ -f "$RUNNER_ROOT/.runner" ]]; then
+    log "Existing .runner found — removing via config.sh remove..."
+    pushd "$RUNNER_ROOT" > /dev/null
+    if [[ "$RUNNER_USER" == "root" ]]; then
+        RUNNER_ALLOW_RUNASROOT=1 ./config.sh remove --token "$RUNNER_TOKEN" 2>/dev/null || true
+    else
+        sudo -u "$RUNNER_USER" ./config.sh remove --token "$RUNNER_TOKEN" 2>/dev/null || true
+    fi
+    popd > /dev/null
+fi
 
-# Remove stale systemd service files if any (best-effort, no systemctl needed).
+# Belt-and-suspenders: force-remove any leftover config files.
+rm -f "$RUNNER_ROOT/.runner" "$RUNNER_ROOT/.credentials" "$RUNNER_ROOT/.credentials_rsaparams" || true
 rm -f /etc/systemd/system/actions.runner.*.service 2>/dev/null || true
+
+# Verify the files are gone before proceeding.
+if [[ -f "$RUNNER_ROOT/.runner" ]]; then
+    err ".runner still exists after cleanup — permissions issue? Path: $RUNNER_ROOT/.runner"
+fi
+log "Runner cleanup complete."
 
 if [[ "$RUNNER_USER" == "root" ]]; then
     RUNNER_ALLOW_RUNASROOT=1 \
