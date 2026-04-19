@@ -169,48 +169,31 @@ pkill -9 -f "Runner.Listener" 2>/dev/null || true
 pkill -9 -f "Runner.Worker"   2>/dev/null || true
 sleep 2
 
-# Use the official removal method first (deregisters from GitHub).
 if [[ -f "$RUNNER_ROOT/.runner" ]]; then
-    log "Existing .runner found — removing via config.sh remove..."
-    pushd "$RUNNER_ROOT" > /dev/null
-    if [[ "$RUNNER_USER" == "root" ]]; then
-        RUNNER_ALLOW_RUNASROOT=1 ./config.sh remove --token "$RUNNER_TOKEN" 2>/dev/null || true
-    else
-        sudo -u "$RUNNER_USER" ./config.sh remove --token "$RUNNER_TOKEN" 2>/dev/null || true
-    fi
-    popd > /dev/null
-fi
-
-# Belt-and-suspenders: force-remove any leftover config files.
-rm -f "$RUNNER_ROOT/.runner" "$RUNNER_ROOT/.credentials" "$RUNNER_ROOT/.credentials_rsaparams" || true
-rm -f /etc/systemd/system/actions.runner.*.service 2>/dev/null || true
-
-# Verify the files are gone before proceeding.
-if [[ -f "$RUNNER_ROOT/.runner" ]]; then
-    err ".runner still exists after cleanup — permissions issue? Path: $RUNNER_ROOT/.runner"
-fi
-log "Runner cleanup complete."
-
-if [[ "$RUNNER_USER" == "root" ]]; then
-    RUNNER_ALLOW_RUNASROOT=1 \
-    "$RUNNER_ROOT/config.sh" \
-        --url "$REPO_URL" \
-        --token "$RUNNER_TOKEN" \
-        --name "$RUNNER_NAME" \
-        --labels "$LABELS" \
-        --unattended \
-        --replace
+    log "Runner already configured (.runner exists) — skipping config.sh."
 else
-    sudo -u "$RUNNER_USER" \
-    "$RUNNER_ROOT/config.sh" \
-        --url "$REPO_URL" \
-        --token "$RUNNER_TOKEN" \
-        --name "$RUNNER_NAME" \
-        --labels "$LABELS" \
-        --unattended \
-        --replace
+    log "No existing configuration found — registering runner..."
+    if [[ "$RUNNER_USER" == "root" ]]; then
+        RUNNER_ALLOW_RUNASROOT=1 \
+        "$RUNNER_ROOT/config.sh" \
+            --url "$REPO_URL" \
+            --token "$RUNNER_TOKEN" \
+            --name "$RUNNER_NAME" \
+            --labels "$LABELS" \
+            --unattended \
+            --replace
+    else
+        sudo -u "$RUNNER_USER" \
+        "$RUNNER_ROOT/config.sh" \
+            --url "$REPO_URL" \
+            --token "$RUNNER_TOKEN" \
+            --name "$RUNNER_NAME" \
+            --labels "$LABELS" \
+            --unattended \
+            --replace
+    fi
+    log "Runner configured."
 fi
-log "Runner configured."
 
 # Start Docker Engine (SysV init fallback — works without systemd).
 service docker start 2>/dev/null || true
