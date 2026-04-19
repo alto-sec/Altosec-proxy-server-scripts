@@ -30,12 +30,37 @@ done
 
 cd "$DEPLOY_DIR"
 
+# When running under sudo, share the invoking user's Docker credentials so that
+# GHCR login performed by the runner user is visible to root.
+if [[ -n "${SUDO_USER:-}" ]]; then
+    INVOKER_HOME="$(getent passwd "$SUDO_USER" | cut -d: -f6)"
+    export DOCKER_CONFIG="${INVOKER_HOME}/.docker"
+fi
+
 # Remove Docker Desktop credential helper if present — it's not available inside
 # WSL2 without Docker Desktop and causes "docker-credential-desktop.exe not found".
-DOCKER_CFG="${HOME}/.docker/config.json"
-if [[ -f "$DOCKER_CFG" ]] && grep -q 'desktop' "$DOCKER_CFG"; then
-    sed -i '/"credsStore"/d' "$DOCKER_CFG" || true
-    log "Removed Docker Desktop credential helper from Docker config."
+# Use Python so the JSON stays valid after the edit.
+DOCKER_CFG="${DOCKER_CONFIG:-${HOME}/.docker}/config.json"
+if [[ -f "$DOCKER_CFG" ]]; then
+    python3 - "$DOCKER_CFG" <<'PYEOF' 2>/dev/null || true
+import json, sys
+path = sys.argv[1]
+with open(path) as f:
+    cfg = json.load(f)
+changed = False
+for key in ('credsStore', 'credHelpers'):
+    if key in cfg:
+        val = cfg[key]
+        if isinstance(val, str) and 'desktop' in val.lower():
+            del cfg[key]; changed = True
+        elif isinstance(val, dict):
+            cfg[key] = {k: v for k, v in val.items() if 'desktop' not in v.lower()}
+            if cfg[key] != val: changed = True
+if changed:
+    with open(path, 'w') as f:
+        json.dump(cfg, f, indent=2)
+    print("[deploy] Removed Docker Desktop credential helper from Docker config.")
+PYEOF
 fi
 
 if $USE_GHCR; then
