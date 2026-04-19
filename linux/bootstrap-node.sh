@@ -91,14 +91,15 @@ if [[ "$RUNNER_USER" != "root" ]]; then
     log "Added $RUNNER_USER to docker group."
 fi
 
-# Only manage docker via systemd if docker.service exists.
-# Docker Desktop WSL integration provides docker without a systemd unit.
-if systemctl list-unit-files docker.service 2>/dev/null | grep -q 'docker.service'; then
+# Only use systemctl if systemd is actually the init system (PID 1).
+# WSL2 without nested virtualisation runs without systemd; use SysV init fallback.
+if [[ -d /run/systemd/system ]]; then
     systemctl enable docker
     systemctl start docker
-    log "Docker service enabled and started."
+    log "Docker service enabled and started via systemd."
 else
-    log "docker.service unit not found — Docker is available via Docker Desktop WSL integration or similar; skipping systemctl."
+    service docker start 2>/dev/null || true
+    log "Docker started via SysV init (systemd not available)."
 fi
 
 # ── 2. Firewall (ufw) ─────────────────────────────────────────────────────────
