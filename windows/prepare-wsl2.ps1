@@ -238,7 +238,9 @@ $watchdogName = 'AltosecProxyRunnerWatchdog'
 $taskExists    = Get-ScheduledTask -TaskName $taskName     -ErrorAction SilentlyContinue
 $watchdogExists = Get-ScheduledTask -TaskName $watchdogName -ErrorAction SilentlyContinue
 
-$principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -RunLevel Highest
+# WSL2 distros are registered per-user (HKCU). Tasks must run as the current
+# user, not SYSTEM, otherwise wsl.exe cannot find the distro.
+$principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -RunLevel Highest -LogonType S4U
 
 # ── Boot task: start Docker + runner on Windows startup ──────────────────────
 $runnerStartCmd = "service docker start 2>/dev/null; pgrep -f Runner.Listener > /dev/null 2>&1 || nohup bash -c 'cd $RunnerRoot && RUNNER_ALLOW_RUNASROOT=1 ./run.sh >> /tmp/runner.log 2>&1' &"
