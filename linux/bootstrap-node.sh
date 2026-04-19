@@ -169,31 +169,35 @@ pkill -9 -f "Runner.Listener" 2>/dev/null || true
 pkill -9 -f "Runner.Worker"   2>/dev/null || true
 sleep 2
 
-if [[ -f "$RUNNER_ROOT/.runner" ]]; then
-    log "Runner already configured (.runner exists) — skipping config.sh."
+# Unconditionally remove all runner config files. Newer runner versions check
+# .credentials (not .runner) to decide if already configured, so we must
+# delete all three regardless of which ones exist.
+rm -f "$RUNNER_ROOT/.runner" \
+      "$RUNNER_ROOT/.credentials" \
+      "$RUNNER_ROOT/.credentials_rsaparams" || true
+rm -f /etc/systemd/system/actions.runner.*.service 2>/dev/null || true
+log "Runner config files cleared."
+
+if [[ "$RUNNER_USER" == "root" ]]; then
+    RUNNER_ALLOW_RUNASROOT=1 \
+    "$RUNNER_ROOT/config.sh" \
+        --url "$REPO_URL" \
+        --token "$RUNNER_TOKEN" \
+        --name "$RUNNER_NAME" \
+        --labels "$LABELS" \
+        --unattended \
+        --replace
 else
-    log "No existing configuration found — registering runner..."
-    if [[ "$RUNNER_USER" == "root" ]]; then
-        RUNNER_ALLOW_RUNASROOT=1 \
-        "$RUNNER_ROOT/config.sh" \
-            --url "$REPO_URL" \
-            --token "$RUNNER_TOKEN" \
-            --name "$RUNNER_NAME" \
-            --labels "$LABELS" \
-            --unattended \
-            --replace
-    else
-        sudo -u "$RUNNER_USER" \
-        "$RUNNER_ROOT/config.sh" \
-            --url "$REPO_URL" \
-            --token "$RUNNER_TOKEN" \
-            --name "$RUNNER_NAME" \
-            --labels "$LABELS" \
-            --unattended \
-            --replace
-    fi
-    log "Runner configured."
+    sudo -u "$RUNNER_USER" \
+    "$RUNNER_ROOT/config.sh" \
+        --url "$REPO_URL" \
+        --token "$RUNNER_TOKEN" \
+        --name "$RUNNER_NAME" \
+        --labels "$LABELS" \
+        --unattended \
+        --replace
 fi
+log "Runner configured."
 
 # Start Docker Engine (SysV init fallback — works without systemd).
 service docker start 2>/dev/null || true
