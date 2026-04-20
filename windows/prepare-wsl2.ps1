@@ -229,55 +229,6 @@ Write-Host "Downloading and running bootstrap-node.sh inside WSL2..."
 & wsl -d $WslDistro -u root -- bash -c $wslCmd
 if ($LASTEXITCODE -ne 0) { throw "bootstrap-node.sh failed (exit $LASTEXITCODE)" }
 
-# ── Step 5: Windows Task Scheduler — auto-start Docker + runner on boot ───────
-
-Write-Host '=== Step 5: Task Scheduler — auto-start runner on Windows boot ==='
-
-$taskName     = 'AltosecProxyWsl2Autostart'
-$watchdogName = 'AltosecProxyRunnerWatchdog'
-
-# Always unregister existing tasks before recreating — ensures principal and
-# trigger changes take effect cleanly.
-foreach ($tn in @($taskName, $watchdogName)) {
-    if (Get-ScheduledTask -TaskName $tn -ErrorAction SilentlyContinue) {
-        Unregister-ScheduledTask -TaskName $tn -Confirm:$false
-        Write-Host "  [-] Removed old task '$tn'."
-    }
-}
-
-# WSL2 distros are registered per-user (HKCU). Tasks must run as the current
-# user, not SYSTEM, otherwise wsl.exe cannot find the distro.
-$principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -RunLevel Highest -LogonType S4U
-
-# ── Boot task: start Docker + runner on Windows startup ──────────────────────
-# Run runner in the FOREGROUND (no & backgrounding). The task stays alive as
-# long as the runner runs. ExecutionTimeLimit=0 means no timeout.
-$runnerStartCmd = "service docker start 2>/dev/null; cd $RunnerRoot && RUNNER_ALLOW_RUNASROOT=1 ./run.sh >> /tmp/runner.log 2>&1"
-$action  = New-ScheduledTaskAction `
-    -Execute 'wsl.exe' `
-    -Argument "-d $WslDistro -u root -- bash -c `"$runnerStartCmd`""
-$trigger  = New-ScheduledTaskTrigger -AtStartup
-$settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Hours 0) `
-    -MultipleInstances IgnoreNew
-
-Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger `
-    -Settings $settings -Principal $principal -Force | Out-Null
-Write-Host "  [+] Created task '$taskName' (at startup, foreground, user=$($env:USERNAME))."
-
-# ── Watchdog task: if runner died, restart it every 2 min ─────────────────────
-# Also runs in foreground. MultipleInstances=IgnoreNew prevents double-start.
-$watchdogCmd = "pgrep -f Runner.Listener > /dev/null 2>&1 || (service docker start 2>/dev/null; cd $RunnerRoot && RUNNER_ALLOW_RUNASROOT=1 ./run.sh >> /tmp/runner.log 2>&1)"
-$wAction   = New-ScheduledTaskAction `
-    -Execute 'wsl.exe' `
-    -Argument "-d $WslDistro -u root -- bash -c `"$watchdogCmd`""
-$wTrigger  = New-ScheduledTaskTrigger -RepetitionInterval (New-TimeSpan -Minutes 2) -Once -At (Get-Date).Date
-$wSettings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Hours 0) `
-    -MultipleInstances IgnoreNew
-
-Register-ScheduledTask -TaskName $watchdogName -Action $wAction -Trigger $wTrigger `
-    -Settings $wSettings -Principal $principal -Force | Out-Null
-Write-Host "  [+] Created watchdog task '$watchdogName' (every 2 min, foreground, user=$($env:USERNAME))."
-
 # ── Done ──────────────────────────────────────────────────────────────────────
 
 Write-Host ''
@@ -286,7 +237,6 @@ Write-Host "  WSL2 distro          : $WslDistro"
 Write-Host "  .wslconfig           : networkingMode=mirrored ($wslCfgPath)"
 Write-Host "  Deploy dir (WSL2)    : $DeployDir"
 Write-Host "  Runner name          : $RunnerName"
-Write-Host "  Boot task            : $taskName (SYSTEM, at-startup)"
 Write-Host ''
 Write-Host 'Next: confirm the runner shows Idle in GitHub -> Settings -> Actions -> Runners,'
 Write-Host 'then trigger the Deploy workflow (handles docker pull and compose up).'
