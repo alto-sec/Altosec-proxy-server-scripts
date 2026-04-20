@@ -80,6 +80,7 @@ else
     log "Installing Docker Engine via get.docker.com..."
     apt-get update -qq
     apt-get install -y -qq curl ca-certificates
+    mkdir -p /etc/apt/sources.list.d /etc/apt/keyrings
     curl -fsSL https://get.docker.com | sh
     log "Docker Engine installed."
 fi

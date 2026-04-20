@@ -250,28 +250,33 @@ foreach ($tn in @($taskName, $watchdogName)) {
 $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -RunLevel Highest -LogonType S4U
 
 # ── Boot task: start Docker + runner on Windows startup ──────────────────────
-$runnerStartCmd = "service docker start 2>/dev/null; pgrep -f Runner.Listener > /dev/null 2>&1 || nohup bash -c 'cd $RunnerRoot && RUNNER_ALLOW_RUNASROOT=1 ./run.sh >> /tmp/runner.log 2>&1' &"
+# Run runner in the FOREGROUND (no & backgrounding). The task stays alive as
+# long as the runner runs. ExecutionTimeLimit=0 means no timeout.
+$runnerStartCmd = "service docker start 2>/dev/null; cd $RunnerRoot && RUNNER_ALLOW_RUNASROOT=1 ./run.sh >> /tmp/runner.log 2>&1"
 $action  = New-ScheduledTaskAction `
     -Execute 'wsl.exe' `
     -Argument "-d $WslDistro -u root -- bash -c `"$runnerStartCmd`""
 $trigger  = New-ScheduledTaskTrigger -AtStartup
-$settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 5)
+$settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Hours 0) `
+    -MultipleInstances IgnoreNew
 
 Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger `
     -Settings $settings -Principal $principal -Force | Out-Null
-Write-Host "  [+] Created task '$taskName' (at startup, user=$($env:USERNAME))."
+Write-Host "  [+] Created task '$taskName' (at startup, foreground, user=$($env:USERNAME))."
 
-# ── Watchdog task: restart runner every 2 min if it died (e.g. after wsl --shutdown) ──
-$watchdogCmd = "pgrep -f Runner.Listener > /dev/null 2>&1 || (service docker start 2>/dev/null; nohup bash -c 'cd $RunnerRoot && RUNNER_ALLOW_RUNASROOT=1 ./run.sh >> /tmp/runner.log 2>&1' &)"
+# ── Watchdog task: if runner died, restart it every 2 min ─────────────────────
+# Also runs in foreground. MultipleInstances=IgnoreNew prevents double-start.
+$watchdogCmd = "pgrep -f Runner.Listener > /dev/null 2>&1 || (service docker start 2>/dev/null; cd $RunnerRoot && RUNNER_ALLOW_RUNASROOT=1 ./run.sh >> /tmp/runner.log 2>&1)"
 $wAction   = New-ScheduledTaskAction `
     -Execute 'wsl.exe' `
     -Argument "-d $WslDistro -u root -- bash -c `"$watchdogCmd`""
-$wTrigger  = New-ScheduledTaskTrigger -RepetitionInterval (New-TimeSpan -Minutes 2) -Once -At (Get-Date)
-$wSettings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 1)
+$wTrigger  = New-ScheduledTaskTrigger -RepetitionInterval (New-TimeSpan -Minutes 2) -Once -At (Get-Date).Date
+$wSettings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Hours 0) `
+    -MultipleInstances IgnoreNew
 
 Register-ScheduledTask -TaskName $watchdogName -Action $wAction -Trigger $wTrigger `
     -Settings $wSettings -Principal $principal -Force | Out-Null
-Write-Host "  [+] Created watchdog task '$watchdogName' (every 2 min, user=$($env:USERNAME))."
+Write-Host "  [+] Created watchdog task '$watchdogName' (every 2 min, foreground, user=$($env:USERNAME))."
 
 # ── Done ──────────────────────────────────────────────────────────────────────
 
