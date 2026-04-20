@@ -125,6 +125,7 @@ fi
 log "=== Step 3: Deploy directory ==="
 
 mkdir -p "$DEPLOY_DIR"
+chown "$RUNNER_USER:$RUNNER_USER" "$DEPLOY_DIR" 2>/dev/null || true
 
 # Write ALTOSEC_DEPLOY_DIR to /etc/environment and runner .env so deploy jobs
 # can locate compose files without hardcoding the path.
